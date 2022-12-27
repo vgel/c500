@@ -139,6 +139,14 @@ def ctype_to_wasmtype(c_type: CType) -> str:
     else:
         die(f"unknown type: {c_type.typename}", c_type.token.line)
 
+def sizeof_wasmtype(wasmtype: str) -> int:
+    if wasmtype in ("i32", "f32"):
+        return 4
+    elif wasmtype in ("i64", "f64"):
+        return 8
+    else:
+        die(f"unrecognized wasmtype: {wasmtype}")
+
 
 @dataclasses.dataclass
 class Variable:
@@ -163,7 +171,8 @@ class StackFrame:
 
     def add_var(self, name: str, type: CType) -> None:
         self.variables[name] = FrameSlot(Variable(name, type), self.frame_size)
-        self.frame_size += 1
+        self.frame_size += sizeof_wasmtype(ctype_to_wasmtype(type))
+        print(f";; add var {name} size {self.frame_size}")
 
     def lookup_var_and_offset(self, name: str) -> tuple[FrameSlot, int] | None:
         if name in self.variables:
@@ -194,7 +203,7 @@ def emit_load(frame: StackFrame, name: Token) -> None:
     print(f"    ;; load {name.content}")
     print(f"    global.get $__stack_pointer")
     print(f"    i32.const {frame.get_offset(name)}")
-    print(f"    i32.sub")
+    print(f"    i32.add")
     print(f"    i32.load")
 
 
@@ -217,7 +226,7 @@ def expression(lexer: Lexer, frame: StackFrame) -> None:
             print(f"    ;; &{name.content}")
             print(f"    global.get $__stack_pointer")
             print(f"    i32.const {frame.get_offset(name)}")
-            print(f"    i32.sub")
+            print(f"    i32.add")
         elif lexer.try_next(TokenKind.OpenParen):
             expression(lexer, frame)
             lexer.next(TokenKind.CloseParen)
@@ -270,7 +279,7 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
         print(f"    ;; lhs {'*' * pointer_level}{name.content}")
         print(f"    global.get $__stack_pointer")
         print(f"    i32.const {frame.get_offset(name)}")
-        print(f"    i32.sub")
+        print(f"    i32.add")
         for _ in range(pointer_level):
             print(f"    i32.load")
         if lexer.try_next(TokenKind.Equals):
