@@ -24,7 +24,13 @@ fi
 
 show "$scratchdir/$t.wat"
 
-if ! wasmer run "$scratchdir/$t.wat" -i main > "$scratchdir/$t.out"
+if ! wat2wasm "$scratchdir/$t.wat" -o "$scratchdir/$t.wasm"
+then
+    exit 1
+fi
+
+
+if ! wasmer run "$scratchdir/$t.wasm" -i main > "$scratchdir/$t.out"
 then
     exit 1
 fi
