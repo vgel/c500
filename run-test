@@ -1,0 +1,34 @@
+#!/bin/bash
+
+set -euo pipefail
+
+scratchdir=$(mktemp -d)
+cleanup () {
+  rm -rf "$scratchdir"
+}
+trap cleanup EXIT
+
+path="$1"
+t=$(basename "$path")
+bat "$path"
+
+if ! python compiler.py "$path" > "$scratchdir/$t.wat"
+then
+    bat "$scratchdir/$t.wat"
+    exit 1
+fi
+
+bat "$scratchdir/$t.wat"
+
+if ! wasmer run "$scratchdir/$t.wat" -i main > "$scratchdir/$t.out"
+then
+    exit 1
+fi
+
+out=$(cat "$scratchdir/$t.out")
+echo "$out"
+
+if [[ "$out" != "0" ]]
+then
+    exit 1
+fi
