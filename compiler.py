@@ -265,7 +265,7 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
             print(f"    ;; store {'*' * pointer_level}{name.content}")
             print(f"    i32.store")
         else:
-            print(f"    drop") # dead load ¯\_(ツ)_/¯
+            print(f"    drop")  # dead load ¯\_(ツ)_/¯
         lexer.next(TokenKind.Semicolon)
     else:
         die("expected statement", lexer.line)
