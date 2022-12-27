@@ -14,6 +14,7 @@ def die(message: str, line: int | None = None) -> NoReturn:
 class TokenKind(enum.Enum):
     Invalid = "Invalid"
     Eof = "Eof"
+    Type = "Type"
     Name = "Name"
     IntConst = "IntConst"
     Return = "return"
@@ -41,6 +42,7 @@ class Lexer:
         self.src = src
         self.loc = 0
         self.line = 0
+        self.types = ["int"]  # TODO: lexer hack
 
     def skip_ws(self) -> None:
         while self.loc < len(self.src) and self.src[self.loc] in " \t\n":
@@ -61,6 +63,7 @@ class Lexer:
             if token_kind in (
                 TokenKind.Invalid,
                 TokenKind.Eof,
+                TokenKind.Type,
                 TokenKind.Name,
                 TokenKind.IntConst,
             ):
@@ -75,7 +78,7 @@ class Lexer:
         m = re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*", self.src[self.loc :])
         if m is not None:
             return Token(
-                kind=TokenKind.Name,
+                kind=TokenKind.Type if m.group(0) in self.types else TokenKind.Name,
                 content=m.group(0),
                 line=self.line,
             )
@@ -99,13 +102,6 @@ class Lexer:
         if token.kind != TokenKind.Invalid:
             self.loc += len(token.content)
         return token
-
-    def peek2(self) -> tuple[Token, Token]:
-        # hack for detecting declarations
-        old_loc = self.loc
-        first, second = self.next(), self.peek()
-        self.loc = old_loc
-        return (first, second)
 
     def try_next(self, kind: TokenKind) -> Token | None:
         if self.peek().kind != kind:
@@ -235,14 +231,14 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
 
 
 def variable_declaration(lexer: Lexer, frame: StackFrame) -> None:
-    typename = lexer.next(TokenKind.Name)
+    typename = lexer.next(TokenKind.Type)
     varname = lexer.next(TokenKind.Name)
     lexer.next(TokenKind.Semicolon)
     frame.add_var(varname.content, typename.content)
 
 
 def func_decl(lexer: Lexer) -> None:
-    return_type = lexer.next(TokenKind.Name)
+    return_type = lexer.next(TokenKind.Type)
     function_name = lexer.next(TokenKind.Name)
 
     frame = StackFrame()
@@ -253,12 +249,8 @@ def func_decl(lexer: Lexer) -> None:
     lexer.next(TokenKind.OpenCurly)
 
     # declarations (up top, c89 only yolo)
-    while True:
-        p1, p2 = lexer.peek2()
-        if p1.kind == p2.kind == TokenKind.Name:
-            variable_declaration(lexer, frame)
-        else:
-            break
+    while lexer.peek().kind == TokenKind.Type:
+        variable_declaration(lexer, frame)
 
     print(f"  (func ${function_name.content} (result {map_type(return_type)})")
     print(f"    ;; prelude--adjust stack pointer (grows down)")
