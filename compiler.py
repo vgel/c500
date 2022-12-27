@@ -33,6 +33,7 @@ class TokenKind(enum.Enum):
     Slash = "/"
     Percent = "%"
     Ampersand = "&"
+    Comma = ","
 
 
 @dataclasses.dataclass
@@ -125,12 +126,15 @@ class CType:
         return self.token.content
 
 
-def parse_type(lexer: Lexer) -> CType:
-    name = lexer.next(TokenKind.Type)
+def parse_pointer_level(lexer: Lexer) -> int:
     pointer_level = 0
     while lexer.try_next(TokenKind.Star):
         pointer_level += 1
-    return CType(name, pointer_level)
+    return pointer_level
+
+
+def parse_type(lexer: Lexer) -> CType:
+    return CType(lexer.next(TokenKind.Type), parse_pointer_level(lexer))
 
 
 def ctype_to_wasmtype(c_type: CType) -> str:
@@ -138,6 +142,7 @@ def ctype_to_wasmtype(c_type: CType) -> str:
         return "i32"
     else:
         die(f"unknown type: {c_type.typename}", c_type.token.line)
+
 
 def sizeof_wasmtype(wasmtype: str) -> int:
     if wasmtype in ("i32", "f32"):
@@ -293,15 +298,15 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
     elif lexer.try_next(TokenKind.If):
         lexer.next(TokenKind.OpenParen)
         print("    ;; if")
-        print("    block") # for else
+        print("    block")  # for else
         print("    block")
         expression(lexer, frame)
         lexer.next(TokenKind.CloseParen)
         print("    i32.eqz")
-        print("    br_if 0") # exit into else block
+        print("    br_if 0")  # exit into else block
         print("    ;; if body")
         bracketed_block_or_single_statement(lexer, frame)
-        print("    br 1") # skip to end of else block
+        print("    br 1")  # skip to end of else block
         print("    end")
         if lexer.try_next(TokenKind.Else):
             if lexer.try_next(TokenKind.If):
@@ -315,8 +320,14 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
 def variable_declaration(lexer: Lexer, frame: StackFrame) -> None:
     type = parse_type(lexer)
     varname = lexer.next(TokenKind.Name)
-    lexer.next(TokenKind.Semicolon)
     frame.add_var(varname.content, type)
+
+    while lexer.try_next(TokenKind.Comma):
+        pointer_level = parse_pointer_level(lexer)
+        varname = lexer.next(TokenKind.Name)
+        frame.add_var(varname.content, CType(type.token, pointer_level))
+
+    lexer.next(TokenKind.Semicolon)
 
 
 def func_decl(lexer: Lexer) -> None:
