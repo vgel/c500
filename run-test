@@ -8,17 +8,21 @@ cleanup () {
 }
 trap cleanup EXIT
 
+show() {
+    bat --paging=never --map-syntax='*.wat:Lisp' "$@"
+}
+
 path="$1"
 t=$(basename "$path")
-bat "$path"
+show "$path"
 
 if ! python compiler.py "$path" > "$scratchdir/$t.wat"
 then
-    bat "$scratchdir/$t.wat"
+    show "$scratchdir/$t.wat"
     exit 1
 fi
 
-bat "$scratchdir/$t.wat"
+show "$scratchdir/$t.wat"
 
 if ! wasmer run "$scratchdir/$t.wat" -i main > "$scratchdir/$t.out"
 then
@@ -26,7 +30,7 @@ then
 fi
 
 out=$(cat "$scratchdir/$t.out")
-echo "$out"
+show "$scratchdir/$t.out"
 
 if [[ "$out" != "0" ]]
 then
