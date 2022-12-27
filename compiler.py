@@ -307,10 +307,10 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
             print(f"    drop")  # dead load ¯\_(ツ)_/¯
         lexer.next(TokenKind.Semicolon)
     elif lexer.try_next(TokenKind.If):
-        lexer.next(TokenKind.OpenParen)
         print("    ;; if")
         print("    block")  # for else
         print("    block")
+        lexer.next(TokenKind.OpenParen)
         expression(lexer, frame)
         lexer.next(TokenKind.CloseParen)
         print("    i32.eqz")
@@ -323,6 +323,20 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
             if lexer.try_next(TokenKind.If):
                 die("else if not supported", lexer.line)
             bracketed_block_or_single_statement(lexer, frame)
+        print("    end")
+    elif lexer.try_next(TokenKind.While):
+        print(";; while")
+        print("block")
+        print("loop")
+        lexer.next(TokenKind.OpenParen)
+        expression(lexer, frame)
+        lexer.next(TokenKind.CloseParen)
+        print("    i32.eqz")
+        print("    br_if 1") # exit loop by jumping forward to end of enclosing block
+        print("    ;; while body")
+        bracketed_block_or_single_statement(lexer, frame)
+        print("    br 0") # jump to beginning of loop
+        print("    end")
         print("    end")
     else:
         die("expected statement", lexer.line)
