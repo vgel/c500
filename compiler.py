@@ -17,6 +17,9 @@ class TokenKind(enum.Enum):
     Type = "Type"
     Name = "Name"
     IntConst = "IntConst"
+    If = "if"
+    Else = "else"
+    While = "while"
     Return = "return"
     OpenParen = "("
     CloseParen = ")"
@@ -240,6 +243,14 @@ def expression(lexer: Lexer, frame: StackFrame) -> None:
             print("    i32.sub")
 
 
+def bracketed_block_or_single_statement(lexer: Lexer, frame: StackFrame) -> None:
+    if lexer.try_next(TokenKind.OpenCurly):
+        while lexer.try_next(TokenKind.CloseCurly) is None:
+            statement(lexer, frame)
+    else:
+        statement(lexer, frame)
+
+
 def statement(lexer: Lexer, frame: StackFrame) -> None:
     if lexer.try_next(TokenKind.Return):
         if lexer.peek().kind != TokenKind.Semicolon:
@@ -267,6 +278,24 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
         else:
             print(f"    drop")  # dead load ¯\_(ツ)_/¯
         lexer.next(TokenKind.Semicolon)
+    elif lexer.try_next(TokenKind.If):
+        lexer.next(TokenKind.OpenParen)
+        print("    ;; if")
+        print("    block") # for else
+        print("    block")
+        expression(lexer, frame)
+        lexer.next(TokenKind.CloseParen)
+        print("    i32.eqz")
+        print("    br_if 0") # exit into else block
+        print("    ;; if body")
+        bracketed_block_or_single_statement(lexer, frame)
+        print("    br 1") # skip to end of else block
+        print("    end")
+        if lexer.try_next(TokenKind.Else):
+            if lexer.try_next(TokenKind.If):
+                die("else if not supported", lexer.line)
+            bracketed_block_or_single_statement(lexer, frame)
+        print("    end")
     else:
         die("expected statement", lexer.line)
 
@@ -305,6 +334,10 @@ def func_decl(lexer: Lexer) -> None:
         statement(lexer, frame)
     lexer.next(TokenKind.CloseCurly)
 
+    # wasmer seems to not understand that
+    # `(func $x (result i32) block i32.const 0 return end)` doesn't have an implicit
+    # return, so this is only there to provide a dummy stack value for the validator
+    print(f"    i32.const 0xdeadb33f ;; validator hack")
     # TODO: for void functions we need to add an addl emit_return for implicit returns
     print(f"  )")
 
