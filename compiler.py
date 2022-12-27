@@ -28,6 +28,7 @@ class TokenKind(enum.Enum):
     Minus = "-"
     Star = "*"
     Slash = "/"
+    Ampersand = "&"
 
 
 @dataclasses.dataclass
@@ -110,9 +111,35 @@ class Lexer:
 
 
 @dataclasses.dataclass
+class CType:
+    token: Token
+    # 0 = not a pointer, 1 = int *x, 2 = int **x, etc.
+    pointer_level: int
+
+    @property
+    def typename(self) -> str:
+        return self.token.content
+
+
+def parse_type(lexer: Lexer) -> CType:
+    name = lexer.next(TokenKind.Type)
+    pointer_level = 0
+    while lexer.try_next(TokenKind.Star):
+        pointer_level += 1
+    return CType(name, pointer_level)
+
+
+def ctype_to_wasmtype(c_type: CType) -> str:
+    if c_type.pointer_level > 0 or c_type.typename == "int":
+        return "i32"
+    else:
+        die(f"unknown type: {c_type.typename}", c_type.token.line)
+
+
+@dataclasses.dataclass
 class Variable:
     name: str
-    type: str
+    type: CType
 
 
 @dataclasses.dataclass
@@ -130,11 +157,9 @@ class StackFrame:
         if parent is not None:
             self.frame_offset = parent.frame_offset + parent.frame_size
 
-    def add_var(self, name: str, type: str) -> None:
+    def add_var(self, name: str, type: CType) -> None:
         self.variables[name] = FrameSlot(Variable(name, type), self.frame_size)
         self.frame_size += 1
-        if len(self.variables) > self.frame_size:
-            die("bug: too many vars in frame")
 
     def lookup_var_and_offset(self, name: str) -> tuple[FrameSlot, int] | None:
         if name in self.variables:
@@ -150,13 +175,6 @@ class StackFrame:
         if slot_and_offset is None:
             die(f"unknown variable {name.content}", name.line)
         return slot_and_offset[1]
-
-
-def map_type(c_type: Token) -> str:
-    if c_type.content == "int":
-        return "i32"
-    else:
-        die(f"unknown type: {c_type.content}", c_type.line)
 
 
 def emit_return(frame: StackFrame) -> None:
@@ -183,9 +201,19 @@ def expression(lexer: Lexer, frame: StackFrame) -> None:
         elif varname := lexer.try_next(TokenKind.Name):
             emit_load(frame, varname)
         elif lexer.try_next(TokenKind.Minus):
-            # todo: support --?
+            if lexer.peek().kind == TokenKind.Minus:
+                die("predecrement not supported", lexer.line)
             value()
             print(f"    i32.neg")
+        elif lexer.try_next(TokenKind.Star):
+            expression(lexer, frame)
+            print(f"    i32.load")
+        elif lexer.try_next(TokenKind.Ampersand):
+            name = lexer.next(TokenKind.Name)
+            print(f"    ;; &{name.content}")
+            print(f"    global.get $__stack_pointer")
+            print(f"    i32.const {frame.get_offset(name)}")
+            print(f"    i32.sub")
         elif lexer.try_next(TokenKind.OpenParen):
             expression(lexer, frame)
             lexer.next(TokenKind.CloseParen)
@@ -218,27 +246,40 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
             expression(lexer, frame)
         lexer.next(TokenKind.Semicolon)
         emit_return(frame)
-    elif name := lexer.try_next(TokenKind.Name):
+    elif lexer.peek().kind in (TokenKind.Name, TokenKind.Star):
+        # parse lhs
+        pointer_level = 0
+        while lexer.try_next(TokenKind.Star):
+            pointer_level += 1
+        name = lexer.next(TokenKind.Name)
         _ = frame.get_offset(name)  # assert var exists in case of `x;` with no store
+        print(f"    ;; lhs {'*' * pointer_level}{name.content}")
+        print(f"    global.get $__stack_pointer")
+        print(f"    i32.const {frame.get_offset(name)}")
+        print(f"    i32.sub")
+        for _ in range(pointer_level):
+            print(f"    i32.load")
         if lexer.try_next(TokenKind.Equals):
-            print(f"    ;; store {name.content}")
-            print(f"    global.get $__stack_pointer")
-            print(f"    i32.const {frame.get_offset(name)}")
-            print(f"    i32.sub")
+            print(f"    ;; rhs {'*' * pointer_level}{name.content}")
             expression(lexer, frame)
+            print(f"    ;; store {'*' * pointer_level}{name.content}")
             print(f"    i32.store")
+        else:
+            print(f"    drop") # dead load ¯\_(ツ)_/¯
         lexer.next(TokenKind.Semicolon)
+    else:
+        die("expected statement", lexer.line)
 
 
 def variable_declaration(lexer: Lexer, frame: StackFrame) -> None:
-    typename = lexer.next(TokenKind.Type)
+    type = parse_type(lexer)
     varname = lexer.next(TokenKind.Name)
     lexer.next(TokenKind.Semicolon)
-    frame.add_var(varname.content, typename.content)
+    frame.add_var(varname.content, type)
 
 
 def func_decl(lexer: Lexer) -> None:
-    return_type = lexer.next(TokenKind.Type)
+    return_type = parse_type(lexer)
     function_name = lexer.next(TokenKind.Name)
 
     frame = StackFrame()
@@ -252,7 +293,7 @@ def func_decl(lexer: Lexer) -> None:
     while lexer.peek().kind == TokenKind.Type:
         variable_declaration(lexer, frame)
 
-    print(f"  (func ${function_name.content} (result {map_type(return_type)})")
+    print(f"  (func ${function_name.content} (result {ctype_to_wasmtype(return_type)})")
     print(f"    ;; prelude--adjust stack pointer (grows down)")
     print(f"    global.get $__stack_pointer")
     print(f"    i32.const {frame.frame_size}")
