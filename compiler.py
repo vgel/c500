@@ -2,7 +2,7 @@ import dataclasses
 import enum
 import re
 import sys
-from typing import NoReturn
+from typing import Callable, NoReturn
 
 
 def die(message: str, line: int | None = None) -> NoReturn:
@@ -33,6 +33,10 @@ class TokenKind(enum.Enum):
     Slash = "/"
     Percent = "%"
     Ampersand = "&"
+    Pipe = "|"
+    Caret = "^"
+    Shl = "<<"
+    Shr = ">>"
     Comma = ","
 
 
@@ -238,26 +242,33 @@ def expression(lexer: Lexer, frame: StackFrame) -> None:
         else:
             die("expected value", lexer.line)
 
-    def muldiv() -> None:
-        value()
-        if lexer.peek().kind in (TokenKind.Star, TokenKind.Slash, TokenKind.Percent):
-            op = lexer.next()
-            value()
-            if op.kind == TokenKind.Star:
-                print("    i32.mul")
-            elif op.kind == TokenKind.Slash:
-                print("    i32.div_s")
-            else:
-                print("    i32.rem_s")
+    def makeop(
+        higher: Callable[[], None], ops: dict[TokenKind, str]
+    ) -> Callable[[], None]:
+        def op() -> None:
+            higher()
+            if lexer.peek().kind in ops.keys():
+                op = lexer.next()
+                higher()
+                print(f"    {ops[op.kind]}")
 
-    muldiv()
-    if lexer.peek().kind in (TokenKind.Plus, TokenKind.Minus):
-        op = lexer.next()
-        muldiv()
-        if op.kind == TokenKind.Plus:
-            print("    i32.add")
-        else:
-            print("    i32.sub")
+        return op
+
+    muldiv = makeop(
+        value,
+        {
+            TokenKind.Star: "i32.mul",
+            TokenKind.Slash: "i32.div_s",
+            TokenKind.Percent: "i32.rem_s",
+        },
+    )
+    plusminus = makeop(muldiv, {TokenKind.Plus: "i32.add", TokenKind.Minus: "i32.sub"})
+    shlr = makeop(plusminus, {TokenKind.Shl: "i32.shl", TokenKind.Shr: "i32.shr_s"})
+    bitand = makeop(shlr, {TokenKind.Ampersand: "i32.and"})
+    bitor = makeop(bitand, {TokenKind.Pipe: "i32.or"})
+    xor = makeop(bitor, {TokenKind.Caret: "i32.xor"})
+
+    xor()
 
 
 def bracketed_block_or_single_statement(lexer: Lexer, frame: StackFrame) -> None:
