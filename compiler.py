@@ -31,6 +31,7 @@ class TokenKind(enum.Enum):
     Minus = "-"
     Star = "*"
     Slash = "/"
+    Percent = "%"
     Ampersand = "&"
 
 
@@ -225,13 +226,15 @@ def expression(lexer: Lexer, frame: StackFrame) -> None:
 
     def muldiv() -> None:
         value()
-        if lexer.peek().kind in (TokenKind.Star, TokenKind.Slash):
+        if lexer.peek().kind in (TokenKind.Star, TokenKind.Slash, TokenKind.Percent):
             op = lexer.next()
             value()
             if op.kind == TokenKind.Star:
                 print("    i32.mul")
+            elif op.kind == TokenKind.Slash:
+                print("    i32.div_s")
             else:
-                print("    i32.div")
+                print("    i32.rem_s")
 
     muldiv()
     if lexer.peek().kind in (TokenKind.Plus, TokenKind.Minus):
