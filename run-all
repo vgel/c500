@@ -8,7 +8,8 @@ testdir="c-testsuite/tests/single-exec"
 max=$(find "$testdir" -name '*.c' | wc -l)
 
 limit="${1:-$max}"
-echo "1..$limit"
+passed="0"
+echo "running $limit"
 
 for i in $(seq "$limit")
 do
@@ -18,6 +19,7 @@ do
         echo -ne "\033[0;31mx\033[0m"
     else
         echo -ne "\033[0;32mx\033[0m"
+        passed=$(($passed + 1))
     fi
 
     if [ "$(($i % 25))" == "0" ]
@@ -28,4 +30,4 @@ do
         echo -n " "
     fi
 done
-echo ""
+echo -e "\npassed $passed/$limit"
