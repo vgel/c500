@@ -24,6 +24,7 @@ class TokenKind(enum.Enum):
     If = "if"
     Else = "else"
     While = "while"
+    Do = "do"
     Return = "return"
     OpenParen = "("
     CloseParen = ")"
@@ -346,6 +347,21 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
         print("    br 0")  # jump to beginning of loop
         print("    end")
         print("    end")
+    elif lexer.try_next(TokenKind.Do):
+        print("    ;; do-while")
+        print("    block")
+        print("    loop")
+        bracketed_block_or_single_statement(lexer, frame)
+        lexer.next(TokenKind.While)
+        lexer.next(TokenKind.OpenParen)
+        load_result(expression(lexer, frame))
+        lexer.next(TokenKind.CloseParen)
+        print("    i32.eqz")
+        print("    br_if 1")  # exit loop by jumping forward to end of enclosing block
+        print("    br 0")  # otherwise jump to beginning of loop
+        print("    end")
+        print("    end")
+        lexer.next(TokenKind.Semicolon)
     else:
         expression(lexer, frame)
         lexer.next(TokenKind.Semicolon)
