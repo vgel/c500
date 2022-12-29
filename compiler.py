@@ -2,11 +2,15 @@ import dataclasses
 import enum
 import re
 import sys
+import traceback
 from typing import Callable, NoReturn
 
 
 def die(message: str, line: int | None = None) -> NoReturn:
     location = f" on line {line + 1}" if line is not None else ""
+    print("\n" + "-" * 30 + "\n")
+    traceback.print_stack()
+    print("\n" + "-" * 30 + "\n")
     print(f"error{location}: {message}", file=sys.stderr)
     sys.exit(1)
 
@@ -108,7 +112,7 @@ class Lexer:
     def next(self, kind: TokenKind | None = None) -> Token:
         token = self.peek()
         if kind is not None and token.kind != kind:
-            die(f"expected {kind.value}", self.line)
+            die(f"expected {kind.value}, got {token.content!r}", self.line)
         if token.kind != TokenKind.Invalid:
             self.loc += len(token.content)
         return token
