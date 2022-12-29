@@ -8,9 +8,9 @@ from typing import Callable, NoReturn
 
 def die(message: str, line: int | None = None) -> NoReturn:
     location = f" on line {line + 1}" if line is not None else ""
-    print("\n" + "-" * 30 + "\n")
+    print("\n" + "-" * 30 + "\n", file=sys.stderr)
     traceback.print_stack()
-    print("\n" + "-" * 30 + "\n")
+    print("\n" + "-" * 30 + "\n", file=sys.stderr)
     print(f"error{location}: {message}", file=sys.stderr)
     sys.exit(1)
 
