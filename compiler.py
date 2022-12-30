@@ -25,6 +25,7 @@ class TokenKind(enum.Enum):
     Else = "else"
     While = "while"
     Do = "do"
+    For = "for"
     Return = "return"
     OpenParen = "("
     CloseParen = ")"
@@ -362,6 +363,31 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
         print("    end")
         print("    end")
         lexer.next(TokenKind.Semicolon)
+    elif lexer.try_next(TokenKind.For):
+        lexer.next(TokenKind.OpenParen)
+        print("    ;; for")
+        print("    block")
+        if lexer.peek().kind != TokenKind.Semicolon:
+            print("    ;; initializer")
+            expression(lexer, frame)
+            lexer.next(TokenKind.Semicolon)
+            print("    drop")
+        print("    loop")
+        if lexer.peek().kind != TokenKind.Semicolon:
+            print("    ;; test")
+            load_result(expression(lexer, frame))
+            lexer.next(TokenKind.Semicolon)
+            print("    i32.eqz")
+            print("    br_if 1")
+        if lexer.peek().kind != TokenKind.CloseParen:
+            die("for postcondition not supported yet", lexer.line)
+        lexer.next(TokenKind.CloseParen)
+        bracketed_block_or_single_statement(lexer, frame)
+        print("    br 0")
+        print("    end")
+        print("    end")
+    elif lexer.try_next(TokenKind.Semicolon):
+        pass
     else:
         expression(lexer, frame)
         lexer.next(TokenKind.Semicolon)
