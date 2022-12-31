@@ -319,9 +319,9 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
             higher_kind = higher()
             if lexer.peek().kind in ops.keys():
                 load_result(higher_kind)
-                op = lexer.next()
-                load_result(higher())
-                emit(f"{ops[op.kind]}")
+                op_token = lexer.next()
+                load_result(op())
+                emit(f"{ops[op_token.kind]}")
                 return ExprResultKind.Value
             return higher_kind
 
