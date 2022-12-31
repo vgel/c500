@@ -177,8 +177,10 @@ def parse_pointer_level(lexer: Lexer) -> int:
     return pointer_level
 
 
-def parse_type(lexer: Lexer) -> CType:
-    return CType(lexer.next(TokenKind.Type), parse_pointer_level(lexer))
+def parse_type(lexer: Lexer, typename: Token | None = None) -> CType:
+    if typename is None:
+        typename = lexer.next(TokenKind.Type)
+    return CType(typename, parse_pointer_level(lexer))
 
 
 def ctype_to_wasmtype(c_type: CType) -> str:
@@ -443,9 +445,9 @@ def variable_declaration(lexer: Lexer, frame: StackFrame) -> None:
     frame.add_var(varname.content, type)
 
     while lexer.try_next(TokenKind.Comma):
-        pointer_level = parse_pointer_level(lexer)
+        type = parse_type(lexer, typename=type.token)
         varname = lexer.next(TokenKind.Name)
-        frame.add_var(varname.content, CType(type.token, pointer_level))
+        frame.add_var(varname.content, type)
 
     lexer.next(TokenKind.Semicolon)
 
