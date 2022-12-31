@@ -362,6 +362,13 @@ def bracketed_block_or_single_statement(lexer: Lexer, frame: StackFrame) -> None
         statement(lexer, frame)
 
 
+def parenthesized_test(lexer: Lexer, frame: StackFrame) -> None:
+    lexer.next(TokenKind.OpenParen)
+    load_result(expression(lexer, frame))
+    lexer.next(TokenKind.CloseParen)
+    emit("i32.eqz")
+
+
 def statement(lexer: Lexer, frame: StackFrame) -> None:
     if lexer.try_next(TokenKind.Return):
         if lexer.peek().kind != TokenKind.Semicolon:
@@ -371,40 +378,28 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
     elif lexer.try_next(TokenKind.If):
         with emit_block("block ;; if statement", "end"):
             with emit_block("block", "end"):
-                lexer.next(TokenKind.OpenParen)
-                load_result(expression(lexer, frame))
-                lexer.next(TokenKind.CloseParen)
-                emit("i32.eqz")
-                emit("br_if 0")  # exit into else block
-                emit(";; if body")
+                parenthesized_test(lexer, frame)
+                emit("br_if 0 ;; jump to else")
                 bracketed_block_or_single_statement(lexer, frame)
-                emit("br 1")  # skip to end of else block
+                emit("br 1 ;; exit if")  # skip to end of else block
             if lexer.try_next(TokenKind.Else):
-                if lexer.try_next(TokenKind.If):
-                    die("else if not supported", lexer.line)
+                # single statement might be "if" of "else if"
                 bracketed_block_or_single_statement(lexer, frame)
     elif lexer.try_next(TokenKind.While):
         with emit_block("block ;; while", "end"):
             with emit_block("loop", "end"):
-                lexer.next(TokenKind.OpenParen)
-                load_result(expression(lexer, frame))
-                lexer.next(TokenKind.CloseParen)
-                emit("i32.eqz")
-                emit("br_if 1")  # exit loop: jump forward to end of enclosing block
-                emit(";; while body")
+                parenthesized_test(lexer, frame)
+                emit("br_if 1 ;; exit loop")
                 bracketed_block_or_single_statement(lexer, frame)
-                emit("br 0")  # jump to beginning of loop
+                emit("br 0 ;; repeat loop")
     elif lexer.try_next(TokenKind.Do):
         with emit_block("block ;; do-while", "end"):
             with emit_block("loop", "end"):
                 bracketed_block_or_single_statement(lexer, frame)
                 lexer.next(TokenKind.While)
-                lexer.next(TokenKind.OpenParen)
-                load_result(expression(lexer, frame))
-                lexer.next(TokenKind.CloseParen)
-                emit("i32.eqz")
-                emit("br_if 1")  # exit loop: jump forward to end of enclosing block
-                emit("br 0")  # otherwise: jump to beginning of loop
+                parenthesized_test(lexer, frame)
+                emit("br_if 1 ;; exit loop")
+                emit("br 0 ;; repeat loop")
                 lexer.next(TokenKind.Semicolon)
     elif lexer.try_next(TokenKind.For):
         lexer.next(TokenKind.OpenParen)
@@ -419,7 +414,7 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
                     emit(";; for test")
                     load_result(expression(lexer, frame))
                     emit("i32.eqz")
-                    emit("br_if 1")
+                    emit("br_if 1 ;; exit loop")
                 lexer.next(TokenKind.Semicolon)
                 saved_lexer = None
                 if lexer.peek().kind != TokenKind.CloseParen:
@@ -433,7 +428,7 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
                 if saved_lexer != None:
                     emit(";; for advancement")
                     expression(saved_lexer, frame)  # use saved lexer
-                emit("br 0")
+                emit("br 0 ;; repeat loop")
     elif lexer.try_next(TokenKind.Semicolon):
         pass  # nothing to emit
     else:
