@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import enum
 import re
@@ -13,6 +14,24 @@ def die(message: str, line: int | None = None) -> NoReturn:
     print("\n" + "-" * 30 + "\n", file=sys.stderr)
     print(f"error{location}: {message}", file=sys.stderr)
     sys.exit(1)
+
+
+_emit_disabled = False
+
+
+def emit(code: str) -> None:
+    if not _emit_disabled:
+        print(code)
+
+
+@contextlib.contextmanager
+def no_emit():
+    global _emit_disabled
+    try:
+        _emit_disabled = True
+        yield
+    finally:
+        _emit_disabled = False
 
 
 class TokenKind(enum.Enum):
@@ -54,11 +73,14 @@ class Token:
 
 
 class Lexer:
-    def __init__(self, src: str) -> None:
+    def __init__(self, src: str, loc=0, line=0, types: list[str] = ["int"]) -> None:
         self.src = src
-        self.loc = 0
-        self.line = 0
-        self.types = ["int"]  # TODO: lexer hack
+        self.loc = loc
+        self.line = line
+        self.types = types  # TODO: lexer hack
+
+    def clone(self) -> "Lexer":
+        return Lexer(self.src, self.loc, self.line, self.types)
 
     def skip_ws(self) -> None:
         while self.loc < len(self.src) and self.src[self.loc] in " \t\n":
@@ -187,7 +209,6 @@ class StackFrame:
     def add_var(self, name: str, type: CType) -> None:
         self.variables[name] = FrameSlot(Variable(name, type), self.frame_size)
         self.frame_size += sizeof_wasmtype(ctype_to_wasmtype(type))
-        print(f";; add var {name} size {self.frame_size}")
 
     def lookup_var_and_offset(self, name: str) -> tuple[FrameSlot, int] | None:
         if name in self.variables:
@@ -206,12 +227,12 @@ class StackFrame:
 
 
 def emit_return(frame: StackFrame) -> None:
-    print(f"    ;; return--adjust stack pointer")
-    print(f"    global.get $__stack_pointer")
-    print(f"    i32.const {frame.frame_size}")
-    print(f"    i32.add")
-    print(f"    global.set $__stack_pointer")
-    print(f"    return")
+    emit(f"    ;; return--adjust stack pointer")
+    emit(f"    global.get $__stack_pointer")
+    emit(f"    i32.const {frame.frame_size}")
+    emit(f"    i32.add")
+    emit(f"    global.set $__stack_pointer")
+    emit(f"    return")
 
 
 class ExprResultKind(enum.Enum):
@@ -223,25 +244,25 @@ class ExprResultKind(enum.Enum):
 
 def load_result(erk: ExprResultKind) -> None:
     if erk == ExprResultKind.Place:
-        print("    i32.load")
+        emit("    i32.load")
 
 
 def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
     def value() -> ExprResultKind:
         if const := lexer.try_next(TokenKind.IntConst):
-            print(f"    i32.const {const.content}")
+            emit(f"    i32.const {const.content}")
             return ExprResultKind.Value
         elif varname := lexer.try_next(TokenKind.Name):
-            print(f"    ;; load {varname.content}")
-            print(f"    global.get $__stack_pointer")
-            print(f"    i32.const {frame.get_offset(varname)}")
-            print(f"    i32.add")
+            emit(f"    ;; load {varname.content}")
+            emit(f"    global.get $__stack_pointer")
+            emit(f"    i32.const {frame.get_offset(varname)}")
+            emit(f"    i32.add")
             return ExprResultKind.Place
         elif lexer.try_next(TokenKind.Minus):
             if lexer.peek().kind == TokenKind.Minus:
                 die("predecrement not supported", lexer.line)
             load_result(value())
-            print(f"    i32.neg")
+            emit(f"    i32.neg")
             return ExprResultKind.Value
         elif lexer.try_next(TokenKind.Star):
             load_result(value())
@@ -267,7 +288,7 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
                 load_result(higher_kind)
                 op = lexer.next()
                 load_result(higher())
-                print(f"    {ops[op.kind]}")
+                emit(f"    {ops[op.kind]}")
                 return ExprResultKind.Value
             return higher_kind
 
@@ -292,10 +313,10 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
         if lexer.try_next(TokenKind.Equals):
             if lhs_kind != ExprResultKind.Place:
                 die("lhs of assignment cannot be value", lexer.line)
-            print(f"    call $__dup_i32")  # save addr
+            emit(f"    call $__dup_i32")  # save addr
             load_result(assign())
-            print(f"    i32.store")
-            print(f"    i32.load")  # use dup'd addr
+            emit(f"    i32.store")
+            emit(f"    i32.load")  # use dup'd addr
             return ExprResultKind.Value
         return lhs_kind
 
@@ -317,81 +338,88 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
         lexer.next(TokenKind.Semicolon)
         emit_return(frame)
     elif lexer.try_next(TokenKind.If):
-        print("    ;; if")
-        print("    block")  # for else
-        print("    block")
+        emit("    ;; if")
+        emit("    block")  # for else
+        emit("    block")
         lexer.next(TokenKind.OpenParen)
         load_result(expression(lexer, frame))
         lexer.next(TokenKind.CloseParen)
-        print("    i32.eqz")
-        print("    br_if 0")  # exit into else block
-        print("    ;; if body")
+        emit("    i32.eqz")
+        emit("    br_if 0")  # exit into else block
+        emit("    ;; if body")
         bracketed_block_or_single_statement(lexer, frame)
-        print("    br 1")  # skip to end of else block
-        print("    end")
+        emit("    br 1")  # skip to end of else block
+        emit("    end")
         if lexer.try_next(TokenKind.Else):
             if lexer.try_next(TokenKind.If):
                 die("else if not supported", lexer.line)
             bracketed_block_or_single_statement(lexer, frame)
-        print("    end")
+        emit("    end")
     elif lexer.try_next(TokenKind.While):
-        print(";; while")
-        print("block")
-        print("loop")
+        emit(";; while")
+        emit("block")
+        emit("loop")
         lexer.next(TokenKind.OpenParen)
         load_result(expression(lexer, frame))
         lexer.next(TokenKind.CloseParen)
-        print("    i32.eqz")
-        print("    br_if 1")  # exit loop by jumping forward to end of enclosing block
-        print("    ;; while body")
+        emit("    i32.eqz")
+        emit("    br_if 1")  # exit loop by jumping forward to end of enclosing block
+        emit("    ;; while body")
         bracketed_block_or_single_statement(lexer, frame)
-        print("    br 0")  # jump to beginning of loop
-        print("    end")
-        print("    end")
+        emit("    br 0")  # jump to beginning of loop
+        emit("    end")
+        emit("    end")
     elif lexer.try_next(TokenKind.Do):
-        print("    ;; do-while")
-        print("    block")
-        print("    loop")
+        emit("    ;; do-while")
+        emit("    block")
+        emit("    loop")
         bracketed_block_or_single_statement(lexer, frame)
         lexer.next(TokenKind.While)
         lexer.next(TokenKind.OpenParen)
         load_result(expression(lexer, frame))
         lexer.next(TokenKind.CloseParen)
-        print("    i32.eqz")
-        print("    br_if 1")  # exit loop by jumping forward to end of enclosing block
-        print("    br 0")  # otherwise jump to beginning of loop
-        print("    end")
-        print("    end")
+        emit("    i32.eqz")
+        emit("    br_if 1")  # exit loop by jumping forward to end of enclosing block
+        emit("    br 0")  # otherwise jump to beginning of loop
+        emit("    end")
+        emit("    end")
         lexer.next(TokenKind.Semicolon)
     elif lexer.try_next(TokenKind.For):
         lexer.next(TokenKind.OpenParen)
-        print("    ;; for")
-        print("    block")
+        emit("    ;; for")
+        emit("    block")
         if lexer.peek().kind != TokenKind.Semicolon:
-            print("    ;; initializer")
+            emit("    ;; initializer")
             expression(lexer, frame)
-            lexer.next(TokenKind.Semicolon)
-            print("    drop")
-        print("    loop")
+            emit("    drop")
+        lexer.next(TokenKind.Semicolon)
+        emit("    loop")
         if lexer.peek().kind != TokenKind.Semicolon:
-            print("    ;; test")
+            emit("    ;; test")
             load_result(expression(lexer, frame))
-            lexer.next(TokenKind.Semicolon)
-            print("    i32.eqz")
-            print("    br_if 1")
+            emit("    i32.eqz")
+            emit("    br_if 1")
+        lexer.next(TokenKind.Semicolon)
+        saved_lexer = None
         if lexer.peek().kind != TokenKind.CloseParen:
-            die("for postcondition not supported yet", lexer.line)
+            # the nastiest hack every hack'd
+            saved_lexer = lexer.clone()
+            with no_emit():
+                expression(lexer, frame)  # advance past expr
         lexer.next(TokenKind.CloseParen)
         bracketed_block_or_single_statement(lexer, frame)
-        print("    br 0")
-        print("    end")
-        print("    end")
+        if saved_lexer != None:
+            emit("    ;; advancement (redux, for real this time)")
+            expression(saved_lexer, frame)
+        emit("    br 0")
+        emit("    end")
+        emit("    end")
     elif lexer.try_next(TokenKind.Semicolon):
         pass
     else:
         expression(lexer, frame)
         lexer.next(TokenKind.Semicolon)
-        print("    drop")
+        emit("    drop")
 
 
 def variable_declaration(lexer: Lexer, frame: StackFrame) -> None:
@@ -422,13 +450,13 @@ def func_decl(lexer: Lexer) -> None:
     while lexer.peek().kind == TokenKind.Type:
         variable_declaration(lexer, frame)
 
-    print(f"  (func ${function_name.content} (result {ctype_to_wasmtype(return_type)})")
-    print(f"    ;; prelude--adjust stack pointer (grows down)")
-    print(f"    global.get $__stack_pointer")
-    print(f"    i32.const {frame.frame_size}")
-    print(f"    i32.sub")
-    print(f"    global.set $__stack_pointer")
-    print(f"    ;; end prelude")
+    emit(f"  (func ${function_name.content} (result {ctype_to_wasmtype(return_type)})")
+    emit(f"    ;; prelude--adjust stack pointer (grows down)")
+    emit(f"    global.get $__stack_pointer")
+    emit(f"    i32.const {frame.frame_size}")
+    emit(f"    i32.sub")
+    emit(f"    global.set $__stack_pointer")
+    emit(f"    ;; end prelude")
 
     while lexer.peek().kind != TokenKind.CloseCurly:
         statement(lexer, frame)
@@ -437,29 +465,29 @@ def func_decl(lexer: Lexer) -> None:
     # wasmer seems to not understand that
     # `(func $x (result i32) block i32.const 0 return end)` doesn't have an implicit
     # return, so this is only there to provide a dummy stack value for the validator
-    print(f"    i32.const 0xdeadb33f ;; validator hack")
+    emit(f"    i32.const 0xdeadb33f ;; validator hack")
     # TODO: for void functions we need to add an addl emit_return for implicit returns
-    print(f"  )")
+    emit(f"  )")
 
 
 def compile(src: str) -> None:
     # prelude
-    print("(module")
-    print("  (memory 2)")
-    print("  (global $__stack_pointer (mut i32) (i32.const 66560))")
-    print("  (func $__dup_i32 (param i32) (result i32 i32)")
-    print("    (local.get 0)")
-    print("    (local.get 0))")
+    emit("(module")
+    emit("  (memory 2)")
+    emit("  (global $__stack_pointer (mut i32) (i32.const 66560))")
+    emit("  (func $__dup_i32 (param i32) (result i32 i32)")
+    emit("    (local.get 0)")
+    emit("    (local.get 0))")
 
     lexer = Lexer(src)
 
     while lexer.peek().kind != TokenKind.Eof:
         func_decl(lexer)
 
-    print('  (export "main" (func $main))')
+    emit('  (export "main" (func $main))')
 
     # postlude
-    print(")")
+    emit(")")
 
 
 if __name__ == "__main__":
