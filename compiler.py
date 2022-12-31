@@ -61,6 +61,8 @@ class TokenKind(enum.Enum):
     CloseParen = ")"
     OpenCurly = "{"
     CloseCurly = "}"
+    OpenSq = "["
+    CloseSq = "]"
     Semicolon = ";"
     Equals = "="
     Plus = "+"
@@ -161,8 +163,7 @@ class Lexer:
 @dataclasses.dataclass
 class CType:
     token: Token
-    # 0 = not a pointer, 1 = int *x, 2 = int **x, etc.
-    pointer_level: int
+    pointer_level: int # 0 = not a pointer, 1 = int *x, 2 = int **x, etc.
 
     @property
     def typename(self) -> str:
@@ -269,26 +270,45 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
             emit(f"i32.const {frame.get_offset(varname)}")
             emit("i32.add")
             return ExprResultKind.Place
-        elif lexer.try_next(TokenKind.Minus):
-            if lexer.peek().kind == TokenKind.Minus:
-                die("predecrement not supported", lexer.line)
-            load_result(value())
-            emit("i32.neg")
-            return ExprResultKind.Value
-        elif lexer.try_next(TokenKind.Star):
-            load_result(value())
-            return ExprResultKind.Place
-        elif lexer.try_next(TokenKind.Ampersand):
-            expr_kind = value()
-            if expr_kind != ExprResultKind.Place:
-                die("cannot take reference to value", lexer.line)
-            return ExprResultKind.Value
         elif lexer.try_next(TokenKind.OpenParen):
             expr_kind = expression(lexer, frame)
             lexer.next(TokenKind.CloseParen)
             return expr_kind
         else:
             die("expected value", lexer.line)
+
+    def accessor() -> ExprResultKind:
+        lhs_kind = value() # TODO: this is wrong for x[0][0], right?
+        if lexer.try_next(TokenKind.OpenSq):
+            load_result(lhs_kind)
+            load_result(expression(lexer, frame))
+            lexer.next(TokenKind.CloseSq)
+            emit("i32.add")
+            return ExprResultKind.Place
+        else:
+            return lhs_kind
+
+    def prefix() -> ExprResultKind:
+        if lexer.try_next(TokenKind.Ampersand):
+            if prefix() != ExprResultKind.Place:
+                die("cannot take reference to value")
+            return ExprResultKind.Value
+        elif lexer.try_next(TokenKind.Star):
+            load_result(prefix())
+            return ExprResultKind.Place
+        elif lexer.try_next(TokenKind.Minus):
+            if lexer.peek().kind == TokenKind.Minus:
+                die("predecrement not supported", lexer.line)
+            load_result(prefix())
+            emit("i32.neg")
+            return ExprResultKind.Value
+        elif lexer.try_next(TokenKind.Plus):
+            if lexer.peek().kind == TokenKind.Plus:
+                die("preincrement not supported", lexer.line)
+            load_result(prefix())
+            return ExprResultKind.Value
+        else:
+            return accessor()
 
     def makeop(
         higher: Callable[[], ExprResultKind], ops: dict[TokenKind, str]
@@ -306,7 +326,7 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
         return op
 
     muldiv = makeop(
-        value,
+        prefix,
         {
             TokenKind.Star: "i32.mul",
             TokenKind.Slash: "i32.div_s",
