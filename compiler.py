@@ -162,41 +162,54 @@ class Lexer:
 
 @dataclasses.dataclass
 class CType:
-    token: Token
-    pointer_level: int # 0 = not a pointer, 1 = int *x, 2 = int **x, etc.
+    typename_token: Token
+    pointer_level: int  # 0 = not a pointer, 1 = int *x, 2 = int **x, etc.
+    array_size_token: Token | None  # None = not an array, because 0 is a valid array size...
 
     @property
     def typename(self) -> str:
-        return self.token.content
+        return self.typename_token.content
+
+    @property
+    def array_size(self) -> int | None:
+        return int(self.array_size_token.content) if self.array_size_token else None
 
 
-def parse_pointer_level(lexer: Lexer) -> int:
+def parse_type_and_name(lexer: Lexer, type: Token | None = None) -> tuple[CType, Token]:
+    if type is None:
+        type = lexer.next(TokenKind.Type)
+
     pointer_level = 0
     while lexer.try_next(TokenKind.Star):
         pointer_level += 1
-    return pointer_level
 
+    varname = lexer.next(TokenKind.Name)
 
-def parse_type(lexer: Lexer, typename: Token | None = None) -> CType:
-    if typename is None:
-        typename = lexer.next(TokenKind.Type)
-    return CType(typename, parse_pointer_level(lexer))
+    if lexer.try_next(TokenKind.OpenSq):
+        array_size = lexer.next(TokenKind.IntConst)
+        lexer.next(TokenKind.CloseSq)
+    else:
+        array_size = None
+
+    return CType(type, pointer_level, array_size), varname
 
 
 def ctype_to_wasmtype(c_type: CType) -> str:
-    if c_type.pointer_level > 0 or c_type.typename == "int":
+    is_pointy = c_type.pointer_level > 0 or c_type.array_size is not None
+    if is_pointy or c_type.typename == "int":
         return "i32"
     else:
-        die(f"unknown type: {c_type.typename}", c_type.token.line)
+        die(f"unknown type: {c_type.typename}", c_type.typename_token.line)
 
 
-def sizeof_wasmtype(wasmtype: str) -> int:
+def sizeof_c_type(c_type: CType) -> int:
+    wasmtype = ctype_to_wasmtype(c_type)
     if wasmtype in ("i32", "f32"):
-        return 4
+        return 4 * (c_type.array_size or 1)
     elif wasmtype in ("i64", "f64"):
-        return 8
+        return 8 * (c_type.array_size or 1)
     else:
-        die(f"unrecognized wasmtype: {wasmtype}")
+        die(f"unrecognized ctype: {c_type} ({wasmtype})")
 
 
 @dataclasses.dataclass
@@ -222,7 +235,7 @@ class StackFrame:
 
     def add_var(self, name: str, type: CType) -> None:
         self.variables[name] = FrameSlot(Variable(name, type), self.frame_size)
-        self.frame_size += sizeof_wasmtype(ctype_to_wasmtype(type))
+        self.frame_size += sizeof_c_type(type)
 
     def lookup_var_and_offset(self, name: str) -> tuple[FrameSlot, int] | None:
         if name in self.variables:
@@ -280,11 +293,13 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
             die("expected value", lexer.line)
 
     def accessor() -> ExprResultKind:
-        lhs_kind = value() # TODO: this is wrong for x[0][0], right?
+        lhs_kind = value()  # TODO: this is wrong for x[0][0], right?
         if lexer.try_next(TokenKind.OpenSq):
             load_result(lhs_kind)
             load_result(expression(lexer, frame))
             lexer.next(TokenKind.CloseSq)
+            emit("i32.const 4") # TODO: this is wrong for non-4-byte types
+            emit("i32.mul")
             emit("i32.add")
             return ExprResultKind.Place
         else:
@@ -440,21 +455,20 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
 
 
 def variable_declaration(lexer: Lexer, frame: StackFrame) -> None:
-    type = parse_type(lexer)
-    varname = lexer.next(TokenKind.Name)
+    type, varname = parse_type_and_name(lexer)
     frame.add_var(varname.content, type)
 
     while lexer.try_next(TokenKind.Comma):
-        type = parse_type(lexer, typename=type.token)
-        varname = lexer.next(TokenKind.Name)
+        type, varname = parse_type_and_name(lexer, type=type.typename_token)
         frame.add_var(varname.content, type)
 
     lexer.next(TokenKind.Semicolon)
 
 
 def func_decl(lexer: Lexer) -> None:
-    rtype = parse_type(lexer)
-    name = lexer.next(TokenKind.Name)
+    rtype, name = parse_type_and_name(lexer)
+    if rtype.array_size is not None:
+        die("no function array return, nice try")
 
     frame = StackFrame()
     # parameters (TODO)
