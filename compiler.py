@@ -57,6 +57,18 @@ class TokenKind(enum.Enum):
     Do = "do"
     For = "for"
     Return = "return"
+    Increment = "++"
+    Decrement = "--"
+    Shl = "<<"
+    Shr = ">>"
+    LogAnd = "&&"
+    LogOr = "||"
+    CmpEq = "=="
+    CmpLtEq = "<="
+    CmpGtEq = ">="
+    CmpNeq = "!="
+    CmpLt = "<"
+    CmpGt = ">"
     OpenParen = "("
     CloseParen = ")"
     OpenCurly = "{"
@@ -73,9 +85,8 @@ class TokenKind(enum.Enum):
     Ampersand = "&"
     Pipe = "|"
     Caret = "^"
-    Shl = "<<"
-    Shr = ">>"
     Comma = ","
+    Bang = "!"
 
 
 @dataclasses.dataclass
@@ -287,7 +298,8 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
             expr_kind = expression(lexer, frame)
             lexer.next(TokenKind.CloseParen)
             return expr_kind
-        elif varname := lexer.try_next(TokenKind.Name):
+        else:
+            varname = lexer.next(TokenKind.Name)
             if lexer.try_next(TokenKind.OpenParen):
                 if lexer.peek().kind != TokenKind.CloseParen:
                     while True:
@@ -303,8 +315,6 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
                 emit(f"i32.const {frame.get_offset(varname)}")
                 emit("i32.add")
                 return ExprResultKind.Place
-        else:
-            die("expected value", lexer.line)
 
     def accessor() -> ExprResultKind:
         lhs_kind = value()  # TODO: this is wrong for x[0][0], right?
@@ -328,15 +338,16 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
             load_result(prefix())
             return ExprResultKind.Place
         elif lexer.try_next(TokenKind.Minus):
-            if lexer.peek().kind == TokenKind.Minus:
-                die("predecrement not supported", lexer.line)
+            emit("i32.const 0")
             load_result(prefix())
-            emit("i32.neg")
+            emit("i32.sub")
             return ExprResultKind.Value
         elif lexer.try_next(TokenKind.Plus):
-            if lexer.peek().kind == TokenKind.Plus:
-                die("preincrement not supported", lexer.line)
             load_result(prefix())
+            return ExprResultKind.Value
+        elif lexer.try_next(TokenKind.Bang):
+            load_result(prefix())
+            emit("i32.eqz")
             return ExprResultKind.Value
         else:
             return accessor()
@@ -366,7 +377,17 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
     )
     plusminus = makeop(muldiv, {TokenKind.Plus: "i32.add", TokenKind.Minus: "i32.sub"})
     shlr = makeop(plusminus, {TokenKind.Shl: "i32.shl", TokenKind.Shr: "i32.shr_s"})
-    bitand = makeop(shlr, {TokenKind.Ampersand: "i32.and"})
+    cmplg = makeop(
+        shlr,
+        {
+            TokenKind.CmpLt: "i32.lt_s",
+            TokenKind.CmpGt: "i32.gt_s",
+            TokenKind.CmpLtEq: "i32.le_s",
+            TokenKind.CmpGtEq: "i32.ge_s",
+        },
+    )
+    cmpe = makeop(cmplg, {TokenKind.CmpEq: "i32.eq", TokenKind.CmpNeq: "i32.ne"})
+    bitand = makeop(cmpe, {TokenKind.Ampersand: "i32.and"})
     bitor = makeop(bitand, {TokenKind.Pipe: "i32.or"})
     xor = makeop(bitor, {TokenKind.Caret: "i32.xor"})
 
@@ -479,54 +500,59 @@ def variable_declaration(lexer: Lexer, frame: StackFrame) -> None:
     lexer.next(TokenKind.Semicolon)
 
 
-def func_decl(lexer: Lexer) -> None:
-    rtype, name = parse_type_and_name(lexer)
-    if rtype.array_size is not None:
-        die("no function array return, nice try")
+def decl(global_frame: StackFrame, lexer: Lexer) -> None:
+    decl_type, name = parse_type_and_name(lexer)
 
-    frame = StackFrame()
-    lexer.next(TokenKind.OpenParen)
-    if lexer.peek().kind != TokenKind.CloseParen:
-        while True:
-            type, varname = parse_type_and_name(lexer)
-            frame.add_var(varname.content, type, is_parameter=True)
-            if not lexer.try_next(TokenKind.Comma):
-                break
-    lexer.next(TokenKind.CloseParen)
+    if lexer.try_next(TokenKind.Semicolon):
+        global_frame.add_var(name.content, decl_type, False)
+    else:
+        if decl_type.array_size is not None:
+            die("no function array return, nice try")
 
-    lexer.next(TokenKind.OpenCurly)
+        frame = StackFrame(global_frame)
+        lexer.next(TokenKind.OpenParen)
+        if lexer.peek().kind != TokenKind.CloseParen:
+            while True:
+                type, varname = parse_type_and_name(lexer)
+                frame.add_var(varname.content, type, is_parameter=True)
+                if not lexer.try_next(TokenKind.Comma):
+                    break
+        lexer.next(TokenKind.CloseParen)
 
-    # declarations (up top, c89 only yolo)
-    while lexer.peek().kind == TokenKind.Type:
-        variable_declaration(lexer, frame)
+        lexer.next(TokenKind.OpenCurly)
 
-    with emit_block(f"(func ${name.content}", ")"):
-        for v in frame.variables.values():
-            if v.is_parameter:
-                emit(f"(param ${v.variable.name} {ctype_to_wasmtype(v.variable.type)})")
-        emit(f"(result {ctype_to_wasmtype(rtype)})")
-        emit(";; fn prelude")
-        emit("global.get $__stack_pointer")
-        emit(f"i32.const {frame.frame_size}")
-        emit("i32.sub")
-        emit("global.set $__stack_pointer")
-        for v in reversed(frame.variables.values()):
-            if v.is_parameter:
-                emit("global.get $__stack_pointer")
-                emit(f"i32.const {frame.get_offset(v.variable.name)}")
-                emit("i32.add")
-                emit(f"local.get ${v.variable.name}")
-                emit("i32.store")
+        # declarations (up top, c89 only yolo)
+        while lexer.peek().kind == TokenKind.Type:
+            variable_declaration(lexer, frame)
 
-        while lexer.peek().kind != TokenKind.CloseCurly:
-            statement(lexer, frame)
-        lexer.next(TokenKind.CloseCurly)
+        with emit_block(f"(func ${name.content}", ")"):
+            for v in frame.variables.values():
+                if v.is_parameter:
+                    var = v.variable
+                    emit(f"(param ${var.name} {ctype_to_wasmtype(var.type)})")
+            emit(f"(result {ctype_to_wasmtype(decl_type)})")
+            emit(";; fn prelude")
+            emit("global.get $__stack_pointer")
+            emit(f"i32.const {frame.frame_size}")
+            emit("i32.sub")
+            emit("global.set $__stack_pointer")
+            for v in reversed(frame.variables.values()):
+                if v.is_parameter:
+                    emit("global.get $__stack_pointer")
+                    emit(f"i32.const {frame.get_offset(v.variable.name)}")
+                    emit("i32.add")
+                    emit(f"local.get ${v.variable.name}")
+                    emit("i32.store")
 
-        # wasmer seems to not understand that
-        # `(func $x (result i32) block i32.const 0 return end)` doesn't have an implicit
-        # return, so this is only there to provide a dummy stack value for the validator
-        emit("i32.const 0xdeadb33f ;; validator hack")
-        # TODO: for void functions we need to add an addl emit_return for implicit returns
+            while lexer.peek().kind != TokenKind.CloseCurly:
+                statement(lexer, frame)
+            lexer.next(TokenKind.CloseCurly)
+
+            # wasmer seems to not understand that
+            # `(func $x (result i32) block i32.const 0 return end)` doesn't have an implicit
+            # return, so this is only there to provide a dummy stack value for the validator
+            emit("i32.const 0xdeadb33f ;; validator hack")
+            # TODO: for void functions we need to add an addl emit_return for implicit returns
 
 
 def compile(src: str) -> None:
@@ -537,9 +563,10 @@ def compile(src: str) -> None:
         emit("  (local.get 0)")
         emit("  (local.get 0))")
 
+        global_frame = StackFrame()
         lexer = Lexer(src)
         while lexer.peek().kind != TokenKind.Eof:
-            func_decl(lexer)
+            decl(global_frame, lexer)
 
         emit('(export "main" (func $main))')
 
