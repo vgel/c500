@@ -263,27 +263,35 @@ def emit_return(frame: StackFrame) -> None:
     emit("return")
 
 
-class ExprResultKind(enum.Enum):
-    Value = "Value"
+@dataclasses.dataclass
+class ExprMeta:
     # a place (corresponding to an address) that can be loaded from / stored to
     # not all addresses are places, e.g. &x is a value (&x = 1 is meaningless)
-    Place = "Place"
+    is_place: bool
+
+    @staticmethod
+    def value() -> "ExprMeta":
+        return ExprMeta(is_place=False)
+
+    @staticmethod
+    def place() -> "ExprMeta":
+        return ExprMeta(is_place=True)
 
 
-def load_result(erk: ExprResultKind) -> None:
-    if erk == ExprResultKind.Place:
+def load_result(em: ExprMeta) -> None:
+    if em.is_place:
         emit("i32.load")
 
 
-def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
-    def value() -> ExprResultKind:
+def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
+    def value() -> ExprMeta:
         if const := lexer.try_next(TokenKind.IntConst):
             emit(f"i32.const {const.content}")
-            return ExprResultKind.Value
+            return ExprMeta.value()
         elif lexer.try_next(TokenKind.OpenParen):
-            expr_kind = expression(lexer, frame)
+            meta = expression(lexer, frame)
             lexer.next(TokenKind.CloseParen)
-            return expr_kind
+            return meta
         else:
             varname = lexer.next(TokenKind.Name)
             if lexer.try_next(TokenKind.OpenParen):
@@ -294,15 +302,15 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
                             break
                 lexer.next(TokenKind.CloseParen)
                 emit(f"call ${varname.content}")
-                return ExprResultKind.Value
+                return ExprMeta.value()
             else:
                 emit(f";; load {varname.content}")
                 emit("global.get $__stack_pointer")
                 emit(f"i32.const {frame.get_offset(varname)}")
                 emit("i32.add")
-                return ExprResultKind.Place
+                return ExprMeta.place()
 
-    def accessor() -> ExprResultKind:
+    def accessor() -> ExprMeta:
         lhs_kind = value()  # TODO: this is wrong for x[0][0], right?
         if lexer.try_next(TokenKind.OpenSq):
             load_result(lhs_kind)
@@ -311,49 +319,49 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
             emit("i32.const 4")  # TODO: this is wrong for non-4-byte types
             emit("i32.mul")
             emit("i32.add")
-            return ExprResultKind.Place
+            return ExprMeta.place()
         else:
             return lhs_kind
 
-    def prefix() -> ExprResultKind:
+    def prefix() -> ExprMeta:
         if lexer.try_next(TokenKind.Ampersand):
-            if prefix() != ExprResultKind.Place:
+            if not prefix().is_place:
                 die("cannot take reference to value")
-            return ExprResultKind.Value
+            return ExprMeta.value()
         elif lexer.try_next(TokenKind.Star):
             load_result(prefix())
-            return ExprResultKind.Place
+            return ExprMeta.place()
         elif lexer.try_next(TokenKind.Minus):
             emit("i32.const 0")
             load_result(prefix())
             emit("i32.sub")
-            return ExprResultKind.Value
+            return ExprMeta.value()
         elif lexer.try_next(TokenKind.Plus):
             load_result(prefix())
-            return ExprResultKind.Value
+            return ExprMeta.value()
         elif lexer.try_next(TokenKind.Bang):
             load_result(prefix())
             emit("i32.eqz")
-            return ExprResultKind.Value
+            return ExprMeta.value()
         elif lexer.try_next(TokenKind.Tilde):
             load_result(prefix())
             emit("i32.const 0xffffffff")
             emit("i32.xor")
-            return ExprResultKind.Value
+            return ExprMeta.value()
         else:
             return accessor()
 
     def makeop(
-        higher: Callable[[], ExprResultKind], ops: dict[TokenKind, str]
-    ) -> Callable[[], ExprResultKind]:
-        def op() -> ExprResultKind:
+        higher: Callable[[], ExprMeta], ops: dict[TokenKind, str]
+    ) -> Callable[[], ExprMeta]:
+        def op() -> ExprMeta:
             higher_kind = higher()
             if lexer.peek().kind in ops.keys():
                 load_result(higher_kind)
                 op_token = lexer.next()
                 load_result(op())
                 emit(f"{ops[op_token.kind]}")
-                return ExprResultKind.Value
+                return ExprMeta.value()
             return higher_kind
 
         return op
@@ -382,16 +390,16 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
     bitor = makeop(bitand, {TokenKind.Pipe: "i32.or"})
     xor = makeop(bitor, {TokenKind.Caret: "i32.xor"})
 
-    def assign() -> ExprResultKind:
+    def assign() -> ExprMeta:
         lhs_kind = xor()
         if lexer.try_next(TokenKind.Equals):
-            if lhs_kind != ExprResultKind.Place:
+            if not lhs_kind.is_place:
                 die("lhs of assignment cannot be value", lexer.line)
             emit("call $__dup_i32")  # save addr
             load_result(assign())
             emit("i32.store")
             emit("i32.load")  # use dup'd addr
-            return ExprResultKind.Value
+            return ExprMeta.value()
         return lhs_kind
 
     return assign()
