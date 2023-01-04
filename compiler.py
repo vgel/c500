@@ -217,14 +217,9 @@ def sizeof_c_type(c_type: CType) -> int:
 
 
 @dataclasses.dataclass
-class Variable:
+class FrameVar:
     name: str
     type: CType
-
-
-@dataclasses.dataclass
-class FrameSlot:
-    variable: Variable
     local_offset: int
     is_parameter: bool
 
@@ -232,19 +227,17 @@ class FrameSlot:
 class StackFrame:
     def __init__(self, parent: "StackFrame | None" = None):
         self.parent = parent
-        self.variables: dict[str, FrameSlot] = {}
+        self.variables: dict[str, FrameVar] = {}
         self.frame_size = 0
         self.frame_offset = 0
         if parent is not None:
             self.frame_offset = parent.frame_offset + parent.frame_size
 
     def add_var(self, name: str, type: CType, is_parameter: bool = False) -> None:
-        self.variables[name] = FrameSlot(
-            Variable(name, type), self.frame_size, is_parameter
-        )
+        self.variables[name] = FrameVar(name, type, self.frame_size, is_parameter)
         self.frame_size += sizeof_c_type(type)
 
-    def lookup_var_and_offset(self, name: str) -> tuple[FrameSlot, int] | None:
+    def lookup_var_and_offset(self, name: str) -> tuple[FrameVar, int] | None:
         if name in self.variables:
             slot = self.variables[name]
             return slot, self.frame_offset + slot.local_offset
@@ -526,8 +519,7 @@ def decl(global_frame: StackFrame, lexer: Lexer) -> None:
         with emit_block(f"(func ${name.content}", ")"):
             for v in frame.variables.values():
                 if v.is_parameter:
-                    var = v.variable
-                    emit(f"(param ${var.name} {ctype_to_wasmtype(var.type)})")
+                    emit(f"(param ${v.name} {ctype_to_wasmtype(v.type)})")
             emit(f"(result {ctype_to_wasmtype(decl_type)})")
             emit(";; fn prelude")
             emit("global.get $__stack_pointer")
@@ -537,9 +529,9 @@ def decl(global_frame: StackFrame, lexer: Lexer) -> None:
             for v in reversed(frame.variables.values()):
                 if v.is_parameter:
                     emit("global.get $__stack_pointer")
-                    emit(f"i32.const {frame.get_offset(v.variable.name)}")
+                    emit(f"i32.const {frame.get_offset(v.name)}")
                     emit("i32.add")
-                    emit(f"local.get ${v.variable.name}")
+                    emit(f"local.get ${v.name}")
                     emit("i32.store")
 
             while lexer.peek().kind != TokenKind.CloseCurly:
