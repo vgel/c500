@@ -1,0 +1,188 @@
+10 # goto
+17 # struct
+18 # struct
+19 # struct
+22 # typedef
+24 # typedef
+25 # string
+26 # string
+31 # crement
+32 # crement
+33 # logic
+34 # break
+36 # assignop
+38 # sizeof
+39 # cast
+40 # include
+41 # crement
+42 # union
+43 # struct
+44 # struct
+45 # types
+46 # typedef
+47 # struct
+48 # struct
+49 # struct
+50 # struct
+51 # switch, goto
+52 # struct
+53 # struct
+54 # enum
+55 # enum
+56 # include
+57 # types, sizeof
+58 # string
+59 # types
+61 # preprocessor
+62 # preprocessor
+63 # preprocessor
+64 # preprocessor
+65 # preprocessor
+66 # preprocessor
+67 # preprocessor
+68 # preprocessor
+69 # preprocessor
+70 # preprocessor
+71 # preprocessor
+72 # assignop
+73 # assignop
+74 # preprocessor
+75 # preprocessor
+76 # ternary
+77 # types, sizeof
+78 # types, declarations
+79 # preprocessor
+80 # voidfn
+81 # types
+82 # types
+83 # preprocessor
+84 # preprocessor
+85 # preprocessor
+86 # types
+87 # struct, funcptr
+88 # funcptr
+89 # struct, funcptr
+91 # typedef, struct
+92 # arraydecl
+93 # arraydecl
+94 # extern
+95 # prototype, funcptr
+97 # preprocessor
+98 # string, unicode
+99 # typedef, struct
+100 # voidarg
+103 # cast
+104 # include
+105 # crement, continue
+106 # struct
+107 # typedef, cast
+108 # prototype, preprocessor
+109 # ternary
+110 # extern
+111 # types, crement
+112 # string, types, cast
+113 # types
+114 # prototype
+115 # preprocessor, string
+117 # arraydecl
+118 # struct
+119 # types
+120 # struct, enum
+121 # prototype
+122 # preprocessor
+123 # types
+124 # wtf
+125 # include
+128 # types
+129 # typedef, goto, struct
+130 # types
+131 # include
+132 # include
+133 # unsigned
+134 # types
+135 # types
+136 # preprocessor
+137 # preprocessor, string
+138 # preprocessor, string
+139 # comment, preprocessor
+140 # varargs
+141 # preprocessor
+142 # preprocessor
+143 # duff's device
+144 # ternary, cast
+145 # preprocessor
+146 # struct
+147 # arraydecl
+148 # struct, arraydecl
+149 # struct
+150 # struct
+151 # arraydecl
+152 # preprocessor
+153 # preprocessor, struct
+154 # include, struct
+155 # voidarg, cast
+156 # include
+157 # include
+158 # include
+159 # include
+160 # include
+161 # include
+162 # include
+163 # include
+164 # include
+165 # include
+166 # include
+167 # include
+168 # include
+169 # include
+170 # include
+171 # include
+172 # include
+173 # include
+174 # include
+175 # include
+176 # include
+177 # include
+178 # include
+179 # include
+180 # include
+181 # include
+182 # include
+183 # include
+184 # include
+185 # include
+186 # include
+187 # include
+188 # include
+189 # include
+190 # include
+191 # include
+192 # include
+193 # include
+194 # include
+195 # include
+196 # include
+197 # include
+198 # include
+199 # include
+200 # include
+201 # include
+202 # include
+203 # include
+204 # include
+205 # include
+206 # include
+207 # include
+208 # include
+209 # typedef, funcptr, enum
+210 # typedef, funcptr
+211 # extern, preprocessor
+212 # include
+213 # extern, static, goto
+214 # types, extern
+215 # extern
+216 # include
+217 # extern, string, types
+218 # string, union, extern
+219 # include
+220 # include

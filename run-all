@@ -11,10 +11,14 @@ limit="${1:-$max}"
 passed="0"
 echo "running $limit"
 
+echo -ne "0\t"
 for i in $(seq "$limit")
 do
     cfile="$testdir/$(printf "%05d" "$i").c"
-    if ! ./run-test "$cfile" &>/dev/null
+    if grep -Eq "^$i ?#" skip
+    then
+        echo -ne "\033[0;33mx\033[0m"
+    elif ! ./run-test "$cfile" &>/dev/null
     then
         echo -ne "\033[0;31mx\033[0m"
     else
@@ -24,7 +28,7 @@ do
 
     if [ "$(($i % 25))" == "0" ]
     then
-        echo
+        echo -ne "\n$i\t"
     elif [ "$(($i % 5))" == "0" ]
     then
         echo -n " "
