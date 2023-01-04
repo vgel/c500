@@ -172,11 +172,29 @@ class Lexer:
         return self.next()
 
 
-@dataclasses.dataclass
 class CType:
-    typename: str
-    pointer_level: int = 0  # 0 = not a pointer, 1 = int *x, 2 = int **x, etc.
-    array_size: int | None = None  # None = not array, because 0 is a valid size
+    def __init__(
+        self,
+        typename: str,
+        pointer_level: int,
+        array_size: int | None,
+        line: int | None = None,
+    ) -> None:
+        self.typename = typename
+        self.pointer_level = pointer_level
+        self.array_size = array_size
+        self.decl_line = line
+        is_pointy = pointer_level > 0 or array_size is not None
+        if is_pointy or typename == "int":
+            self.wasmtype = "i32"
+        else:
+            die(f"unknown type: {typename}", line)
+
+    def sizeof(self) -> int:
+        if self.wasmtype in ("i32", "f32"):
+            return 4 * (self.array_size or 1)
+        else:  # wasmtype in ("i64", "f64")
+            return 8 * (self.array_size or 1)
 
 
 def parse_type_and_name(lexer: Lexer, type: str | None = None) -> tuple[CType, Token]:
@@ -195,25 +213,7 @@ def parse_type_and_name(lexer: Lexer, type: str | None = None) -> tuple[CType, T
     else:
         array_size = None
 
-    return CType(type, pointer_level, array_size), varname
-
-
-def ctype_to_wasmtype(c_type: CType) -> str:
-    is_pointy = c_type.pointer_level > 0 or c_type.array_size is not None
-    if is_pointy or c_type.typename == "int":
-        return "i32"
-    else:
-        die(f"unknown type: {c_type.typename}")
-
-
-def sizeof_c_type(c_type: CType) -> int:
-    wasmtype = ctype_to_wasmtype(c_type)
-    if wasmtype in ("i32", "f32"):
-        return 4 * (c_type.array_size or 1)
-    elif wasmtype in ("i64", "f64"):
-        return 8 * (c_type.array_size or 1)
-    else:
-        die(f"unrecognized ctype: {c_type} ({wasmtype})")
+    return CType(type, pointer_level, array_size, varname.line), varname
 
 
 @dataclasses.dataclass
@@ -235,7 +235,7 @@ class StackFrame:
 
     def add_var(self, name: str, type: CType, is_parameter: bool = False) -> None:
         self.variables[name] = FrameVar(name, type, self.frame_size, is_parameter)
-        self.frame_size += sizeof_c_type(type)
+        self.frame_size += type.sizeof()
 
     def lookup_var_and_offset(self, name: str) -> tuple[FrameVar, int] | None:
         if name in self.variables:
@@ -519,8 +519,8 @@ def decl(global_frame: StackFrame, lexer: Lexer) -> None:
         with emit_block(f"(func ${name.content}", ")"):
             for v in frame.variables.values():
                 if v.is_parameter:
-                    emit(f"(param ${v.name} {ctype_to_wasmtype(v.type)})")
-            emit(f"(result {ctype_to_wasmtype(decl_type)})")
+                    emit(f"(param ${v.name} {v.type.wasmtype})")
+            emit(f"(result {decl_type.wasmtype})")
             emit(";; fn prelude")
             emit("global.get $__stack_pointer")
             emit(f"i32.const {frame.frame_size}")
