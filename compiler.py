@@ -87,6 +87,7 @@ class TokenKind(enum.Enum):
     Caret = "^"
     Comma = ","
     Bang = "!"
+    Tilde = "~"
 
 
 @dataclasses.dataclass
@@ -348,6 +349,11 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
         elif lexer.try_next(TokenKind.Bang):
             load_result(prefix())
             emit("i32.eqz")
+            return ExprResultKind.Value
+        elif lexer.try_next(TokenKind.Tilde):
+            load_result(prefix())
+            emit("i32.const 0xffffffff")
+            emit("i32.xor")
             return ExprResultKind.Value
         else:
             return accessor()
