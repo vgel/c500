@@ -174,22 +174,14 @@ class Lexer:
 
 @dataclasses.dataclass
 class CType:
-    typename_token: Token
-    pointer_level: int  # 0 = not a pointer, 1 = int *x, 2 = int **x, etc.
-    array_size_token: Token | None  # None = not an array, because 0 is a valid array size...
-
-    @property
-    def typename(self) -> str:
-        return self.typename_token.content
-
-    @property
-    def array_size(self) -> int | None:
-        return int(self.array_size_token.content) if self.array_size_token else None
+    typename: str
+    pointer_level: int = 0  # 0 = not a pointer, 1 = int *x, 2 = int **x, etc.
+    array_size: int | None = None  # None = not array, because 0 is a valid size
 
 
-def parse_type_and_name(lexer: Lexer, type: Token | None = None) -> tuple[CType, Token]:
+def parse_type_and_name(lexer: Lexer, type: str | None = None) -> tuple[CType, Token]:
     if type is None:
-        type = lexer.next(TokenKind.Type)
+        type = lexer.next(TokenKind.Type).content
 
     pointer_level = 0
     while lexer.try_next(TokenKind.Star):
@@ -198,7 +190,7 @@ def parse_type_and_name(lexer: Lexer, type: Token | None = None) -> tuple[CType,
     varname = lexer.next(TokenKind.Name)
 
     if lexer.try_next(TokenKind.OpenSq):
-        array_size = lexer.next(TokenKind.IntConst)
+        array_size = int(lexer.next(TokenKind.IntConst).content)
         lexer.next(TokenKind.CloseSq)
     else:
         array_size = None
@@ -211,7 +203,7 @@ def ctype_to_wasmtype(c_type: CType) -> str:
     if is_pointy or c_type.typename == "int":
         return "i32"
     else:
-        die(f"unknown type: {c_type.typename}", c_type.typename_token.line)
+        die(f"unknown type: {c_type.typename}")
 
 
 def sizeof_c_type(c_type: CType) -> int:
@@ -500,7 +492,7 @@ def variable_declaration(lexer: Lexer, frame: StackFrame) -> None:
     frame.add_var(varname.content, type)
 
     while lexer.try_next(TokenKind.Comma):
-        type, varname = parse_type_and_name(lexer, type=type.typename_token)
+        type, varname = parse_type_and_name(lexer, type=type.typename)
         frame.add_var(varname.content, type)
 
     lexer.next(TokenKind.Semicolon)
