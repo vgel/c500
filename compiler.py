@@ -222,6 +222,7 @@ class Variable:
 class FrameSlot:
     variable: Variable
     local_offset: int
+    is_parameter: bool
 
 
 class StackFrame:
@@ -233,8 +234,10 @@ class StackFrame:
         if parent is not None:
             self.frame_offset = parent.frame_offset + parent.frame_size
 
-    def add_var(self, name: str, type: CType) -> None:
-        self.variables[name] = FrameSlot(Variable(name, type), self.frame_size)
+    def add_var(self, name: str, type: CType, is_parameter: bool = False) -> None:
+        self.variables[name] = FrameSlot(
+            Variable(name, type), self.frame_size, is_parameter
+        )
         self.frame_size += sizeof_c_type(type)
 
     def lookup_var_and_offset(self, name: str) -> tuple[FrameSlot, int] | None:
@@ -246,10 +249,11 @@ class StackFrame:
         else:
             return None
 
-    def get_offset(self, name: Token) -> int:
-        slot_and_offset = self.lookup_var_and_offset(name.content)
+    def get_offset(self, name: Token | str) -> int:
+        n = name if isinstance(name, str) else name.content
+        slot_and_offset = self.lookup_var_and_offset(n)
         if slot_and_offset is None:
-            die(f"unknown variable {name.content}", name.line)
+            die(f"unknown variable {n}", None if isinstance(name, str) else name.line)
         return slot_and_offset[1]
 
 
@@ -279,16 +283,26 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
         if const := lexer.try_next(TokenKind.IntConst):
             emit(f"i32.const {const.content}")
             return ExprResultKind.Value
-        elif varname := lexer.try_next(TokenKind.Name):
-            emit(f";; load {varname.content}")
-            emit("global.get $__stack_pointer")
-            emit(f"i32.const {frame.get_offset(varname)}")
-            emit("i32.add")
-            return ExprResultKind.Place
         elif lexer.try_next(TokenKind.OpenParen):
             expr_kind = expression(lexer, frame)
             lexer.next(TokenKind.CloseParen)
             return expr_kind
+        elif varname := lexer.try_next(TokenKind.Name):
+            if lexer.try_next(TokenKind.OpenParen):
+                if lexer.peek().kind != TokenKind.CloseParen:
+                    while True:
+                        load_result(expression(lexer, frame))
+                        if not lexer.try_next(TokenKind.Comma):
+                            break
+                lexer.next(TokenKind.CloseParen)
+                emit(f"call ${varname.content}")
+                return ExprResultKind.Value
+            else:
+                emit(f";; load {varname.content}")
+                emit("global.get $__stack_pointer")
+                emit(f"i32.const {frame.get_offset(varname)}")
+                emit("i32.add")
+                return ExprResultKind.Place
         else:
             die("expected value", lexer.line)
 
@@ -298,7 +312,7 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprResultKind:
             load_result(lhs_kind)
             load_result(expression(lexer, frame))
             lexer.next(TokenKind.CloseSq)
-            emit("i32.const 4") # TODO: this is wrong for non-4-byte types
+            emit("i32.const 4")  # TODO: this is wrong for non-4-byte types
             emit("i32.mul")
             emit("i32.add")
             return ExprResultKind.Place
@@ -471,8 +485,13 @@ def func_decl(lexer: Lexer) -> None:
         die("no function array return, nice try")
 
     frame = StackFrame()
-    # parameters (TODO)
     lexer.next(TokenKind.OpenParen)
+    if lexer.peek().kind != TokenKind.CloseParen:
+        while True:
+            type, varname = parse_type_and_name(lexer)
+            frame.add_var(varname.content, type, is_parameter=True)
+            if not lexer.try_next(TokenKind.Comma):
+                break
     lexer.next(TokenKind.CloseParen)
 
     lexer.next(TokenKind.OpenCurly)
@@ -481,12 +500,23 @@ def func_decl(lexer: Lexer) -> None:
     while lexer.peek().kind == TokenKind.Type:
         variable_declaration(lexer, frame)
 
-    with emit_block(f"(func ${name.content} (result {ctype_to_wasmtype(rtype)})", ")"):
+    with emit_block(f"(func ${name.content}", ")"):
+        for v in frame.variables.values():
+            if v.is_parameter:
+                emit(f"(param ${v.variable.name} {ctype_to_wasmtype(v.variable.type)})")
+        emit(f"(result {ctype_to_wasmtype(rtype)})")
         emit(";; fn prelude")
         emit("global.get $__stack_pointer")
         emit(f"i32.const {frame.frame_size}")
         emit("i32.sub")
         emit("global.set $__stack_pointer")
+        for v in reversed(frame.variables.values()):
+            if v.is_parameter:
+                emit("global.get $__stack_pointer")
+                emit(f"i32.const {frame.get_offset(v.variable.name)}")
+                emit("i32.add")
+                emit(f"local.get ${v.variable.name}")
+                emit("i32.store")
 
         while lexer.peek().kind != TokenKind.CloseCurly:
             statement(lexer, frame)
