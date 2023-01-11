@@ -2,8 +2,7 @@
 17 # struct
 18 # struct
 19 # struct
-22 # typedef
-24 # typedef
+24 # struct
 25 # string
 26 # string
 31 # crement
@@ -19,7 +18,7 @@
 43 # struct
 44 # struct
 45 # types
-46 # typedef
+46 # struct, union
 47 # struct
 48 # struct
 49 # struct
@@ -62,20 +61,20 @@
 87 # struct, funcptr
 88 # funcptr
 89 # struct, funcptr
-91 # typedef, struct
+91 # struct
 92 # arraydecl
 93 # arraydecl
 94 # extern
 95 # prototype, funcptr
 97 # preprocessor
 98 # string, unicode
-99 # typedef, struct
+99 # struct
 100 # voidarg
 103 # cast
 104 # include
 105 # crement, continue
 106 # struct
-107 # typedef, cast
+107 # cast
 108 # prototype, preprocessor
 109 # ternary
 110 # extern
@@ -94,7 +93,7 @@
 124 # wtf
 125 # include
 128 # types
-129 # typedef, goto, struct
+129 # goto, struct
 130 # types
 131 # include
 132 # include
@@ -174,8 +173,8 @@
 206 # include
 207 # include
 208 # include
-209 # typedef, funcptr, enum
-210 # typedef, funcptr
+209 # funcptr, enum
+210 # funcptr
 211 # extern, preprocessor
 212 # include
 213 # extern, static, goto

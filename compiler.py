@@ -51,6 +51,7 @@ class TokenKind(enum.Enum):
     Type = "Type"
     Name = "Name"
     IntConst = "IntConst"
+    Typedef = "typedef"
     If = "if"
     Else = "else"
     While = "while"
@@ -97,15 +98,19 @@ class Token:
     line: int
 
 
+# default types
+TYPES: dict[str, str] = {"int": "int"}
+
+
 class Lexer:
-    def __init__(self, src: str, loc=0, line=0, types: list[str] = ["int"]) -> None:
+    def __init__(self, src: str, loc=0, line=0, types: dict[str, str] = TYPES) -> None:
         self.src = src
         self.loc = loc
         self.line = line
-        self.types = types  # TODO: lexer hack
+        self.types = types
 
     def clone(self) -> "Lexer":
-        return Lexer(self.src, self.loc, self.line, self.types)
+        return Lexer(self.src, self.loc, self.line, self.types.copy())
 
     def skip_ws(self) -> None:
         while self.loc < len(self.src) and self.src[self.loc] in " \t\n":
@@ -195,15 +200,33 @@ class CType:
             return 4 * (self.array_size or 1)
         return 8 * (self.array_size or 1)
 
-    def less_pointy(self) -> "CType":
-        if self.pointer_level == 0:
-            die(f"bug: not a pointer: {self}")
+    def is_ptr(self) -> bool:
+        return self.pointer_level > 0
+
+    def less_ptr(self) -> "CType":
+        assert self.is_ptr(), f"bug: not a pointer: {self}"
         return CType(self.typename, self.pointer_level - 1, self.array_size)
+
+    def more_ptr(self) -> "CType":
+        return CType(self.typename, self.pointer_level + 1, self.array_size)
+
+    def is_arr(self) -> bool:
+        return self.array_size is not None
+
+    def as_non_array(self) -> "CType":
+        assert self.is_arr(), f"bug: not an array: {self}"
+        return CType(self.typename, self.pointer_level, None)
+
+    def __str__(self) -> str:
+        s = self.typename + "*" * self.pointer_level
+        if self.array_size is not None:
+            s += f"[{self.array_size}]"
+        return s
 
 
 def parse_type_and_name(lexer: Lexer, type: str | None = None) -> tuple[CType, Token]:
     if type is None:
-        type = lexer.next(TokenKind.Type).content
+        type = lexer.types[lexer.next(TokenKind.Type).content] # resolve typedef
 
     pointer_level = 0
     while lexer.try_next(TokenKind.Star):
@@ -267,6 +290,7 @@ class ExprMeta:
     is_place: bool
     type: CType
 
+
 def load_result(em: ExprMeta) -> ExprMeta:
     if em.is_place:
         emit("i32.load")
@@ -304,15 +328,20 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
     def accessor() -> ExprMeta:
         lhs_meta = value()  # TODO: this is wrong for x[0][0], right?
         if lexer.try_next(TokenKind.OpenSq):
-            load_result(lhs_meta)
+            lhs_meta = load_result(lhs_meta)
+            lhs_type = lhs_meta.type
+            if not (lhs_type.is_arr() or lhs_type.is_ptr()):
+                die(f"not an array or pointer: {lhs_meta.type}", lexer.line)
+            el_type = (
+                lhs_type.as_non_array() if lhs_type.is_arr() else lhs_type.less_ptr()
+            )
+
             load_result(expression(lexer, frame))
             lexer.next(TokenKind.CloseSq)
-            emit("i32.const 4")  # TODO: this is wrong for non-4-byte types
+            emit(f"i32.const {el_type.sizeof()}")
             emit("i32.mul")
             emit("i32.add")
-            # strip array size
-            newtype = CType(lhs_meta.type.typename, lhs_meta.type.pointer_level)
-            return ExprMeta(True, newtype)
+            return ExprMeta(True, el_type)
         else:
             return lhs_meta
 
@@ -320,13 +349,13 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
         if lexer.try_next(TokenKind.Ampersand):
             meta = prefix()
             if not meta.is_place:
-                die("cannot take reference to value")
-            mt = meta.type
-            newtype = CType(mt.typename, mt.pointer_level + 1, mt.array_size)
-            return ExprMeta(False, newtype)
+                die("cannot take reference to value", lexer.line)
+            return ExprMeta(False, meta.type.more_ptr())
         elif lexer.try_next(TokenKind.Star):
             meta = load_result(prefix())
-            return ExprMeta(True, meta.type.less_pointy())
+            if not meta.type.is_ptr():
+                die("cannot dereference non-pointer", lexer.line)
+            return ExprMeta(True, meta.type.less_ptr())
         elif lexer.try_next(TokenKind.Minus):
             emit("i32.const 0")
             meta = load_result(prefix())
@@ -376,29 +405,32 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
             lhs_meta = load_result(lhs_meta)
             op_token = lexer.next()
             rhs_meta = load_result(plusminus())
-            rtype = lhs_meta.type
+
+            lhs_type, rhs_type, res_type = lhs_meta.type, rhs_meta.type, lhs_meta.type
+
             if lhs_meta.type.pointer_level == rhs_meta.type.pointer_level:
                 pass
-            elif lhs_meta.type.pointer_level > 0 and rhs_meta.type.pointer_level > 0:
-                die(f"cannot {op_token.kind.value} {lhs_meta.type} and {rhs_meta.type}")
-            elif lhs_meta.type.pointer_level > 0 and rhs_meta.type.pointer_level == 0:
-                emit(f"i32.const {lhs_meta.type.less_pointy().sizeof()}")
+            elif lhs_meta.type.is_ptr() and rhs_meta.type.is_ptr():
+                die(f"cannot {op_token.content} {lhs_meta.type} and {rhs_meta.type}")
+            elif lhs_meta.type.is_ptr() and not rhs_meta.type.is_ptr():
+                emit(f"i32.const {lhs_meta.type.less_ptr().sizeof()}")
                 emit("i32.mul")
-            elif lhs_meta.type.pointer_level == 0 and rhs_meta.type.pointer_level > 0:
-                rtype = rhs_meta.type
+            elif not lhs_meta.type.is_ptr() and rhs_meta.type.is_ptr():
+                res_type = rhs_meta.type
                 emit("call $__swap_i32")
-                emit(f"i32.const {rhs_meta.type.less_pointy().sizeof()}")
+                emit(f"i32.const {rhs_meta.type.less_ptr().sizeof()}")
                 emit("i32.mul")
                 emit("call $__swap_i32")
-            emit("i32.add" if op_token.kind == TokenKind.Plus else "i32.sub")
-            if (
-                lhs_meta.type.pointer_level > 0
-                and rhs_meta.type.pointer_level > 0
-                and op_token.kind == TokenKind.Minus
-            ):
-                emit(f"i32.const {rhs_meta.type.less_pointy().sizeof()}")
-                emit(f"i32.div_s")
-            return ExprMeta(False, rtype)
+
+            if op_token.kind == TokenKind.Plus:
+                emit("i32.add")
+            else:
+                emit("i32.sub")
+                if lhs_type.is_ptr() and rhs_type.is_ptr():
+                    emit(f"i32.const {rhs_meta.type.less_ptr().sizeof()}")
+                    emit(f"i32.div_s")
+
+            return ExprMeta(False, res_type)
         return lhs_meta
 
     shlr = makeop(plusminus, {TokenKind.Shl: "i32.shl", TokenKind.Shr: "i32.shr_s"})
@@ -439,14 +471,13 @@ def bracketed_block_or_single_statement(lexer: Lexer, frame: StackFrame) -> None
         statement(lexer, frame)
 
 
-def parenthesized_test(lexer: Lexer, frame: StackFrame) -> None:
-    lexer.next(TokenKind.OpenParen)
-    load_result(expression(lexer, frame))
-    lexer.next(TokenKind.CloseParen)
-    emit("i32.eqz")
-
-
 def statement(lexer: Lexer, frame: StackFrame) -> None:
+    def parenthesized_test() -> None:
+        lexer.next(TokenKind.OpenParen)
+        load_result(expression(lexer, frame))
+        lexer.next(TokenKind.CloseParen)
+        emit("i32.eqz")
+
     if lexer.try_next(TokenKind.Return):
         if lexer.peek().kind != TokenKind.Semicolon:
             load_result(expression(lexer, frame))
@@ -455,7 +486,7 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
     elif lexer.try_next(TokenKind.If):
         with emit_block("block ;; if statement", "end"):
             with emit_block("block", "end"):
-                parenthesized_test(lexer, frame)
+                parenthesized_test()
                 emit("br_if 0 ;; jump to else")
                 bracketed_block_or_single_statement(lexer, frame)
                 emit("br 1 ;; exit if")  # skip to end of else block
@@ -465,7 +496,7 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
     elif lexer.try_next(TokenKind.While):
         with emit_block("block ;; while", "end"):
             with emit_block("loop", "end"):
-                parenthesized_test(lexer, frame)
+                parenthesized_test()
                 emit("br_if 1 ;; exit loop")
                 bracketed_block_or_single_statement(lexer, frame)
                 emit("br 0 ;; repeat loop")
@@ -474,7 +505,7 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
             with emit_block("loop", "end"):
                 bracketed_block_or_single_statement(lexer, frame)
                 lexer.next(TokenKind.While)
-                parenthesized_test(lexer, frame)
+                parenthesized_test()
                 emit("br_if 1 ;; exit loop")
                 emit("br 0 ;; repeat loop")
                 lexer.next(TokenKind.Semicolon)
@@ -524,12 +555,19 @@ def variable_declaration(lexer: Lexer, frame: StackFrame) -> None:
 
 
 def decl(global_frame: StackFrame, lexer: Lexer) -> None:
+    if lexer.try_next(TokenKind.Typedef):
+        type = lexer.next(TokenKind.Type)
+        name = lexer.next(TokenKind.Name)
+        lexer.types[name.content] = type.content
+        lexer.next(TokenKind.Semicolon)
+        return
+
     decl_type, name = parse_type_and_name(lexer)
 
     if lexer.try_next(TokenKind.Semicolon):
         global_frame.add_var(name.content, decl_type, False)
     else:
-        if decl_type.array_size is not None:
+        if decl_type.is_arr():
             die("no function array return, nice try")
 
         frame = StackFrame(global_frame)
