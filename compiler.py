@@ -16,36 +16,36 @@ def die(message: str, line: int | None = None) -> NoReturn:
     sys.exit(1)
 
 
-_emit_disabled = False
-_emit_indent = 0
+class Emitter:
+    def __init__(self):
+        self.indent_level = 0
+        self.emit_disabled = False
 
+    def __call__(self, code: str) -> None:
+        """Emit the given webassembly at the current indent level, unless emit is disabled."""
+        if not self.emit_disabled:
+            print(" " * self.indent_level + code)
 
-def emit(code: str) -> None:
-    """Emit the given webassembly at the current indent level, unless emit is disabled."""
-    if not _emit_disabled:
-        print(" " * _emit_indent + code)
-
-
-@contextlib.contextmanager
-def emit_block(start: str, end: str):
-    """A content manager that emits `start`, then runs the contained code, then emits `end`."""
-    global _emit_indent
-    emit(start)
-    _emit_indent += 2
-    yield
-    _emit_indent -= 2
-    emit(end)
-
-
-@contextlib.contextmanager
-def no_emit():
-    """A context manager that disables `emit()` for the contained code by setting a global flag."""
-    global _emit_disabled
-    try:
-        _emit_disabled = True
+    @contextlib.contextmanager
+    def block(self, start: str, end: str):
+        """A context manager that emits `start`, then runs the contained code, then emits `end`."""
+        self(start)
+        self.indent_level += 2
         yield
-    finally:
-        _emit_disabled = False
+        self.indent_level -= 2
+        self(end)
+
+    @contextlib.contextmanager
+    def no_emit(self):
+        """A context manager that disables emit for the contained code."""
+        self.emit_disabled = True
+        try:
+            yield
+        finally:
+            self.emit_disabled = False
+
+
+emit = Emitter()
 
 
 LITERAL_TOKENS = "typedef if else while do for return ++ -- << >> && || == <= >= != < > ( ) { } [ ] ; = + - * / % & | ^ , ! ~".split()
@@ -508,8 +508,8 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
         # if the test results in `0`, running the `;; else body` code.
         # the second, unconditional `br 1` will jump to the end of the outer block,
         # skipping `;; else body` if `;; if body` already ran.
-        with emit_block("block ;; if statement", "end"):
-            with emit_block("block", "end"):
+        with emit.block("block ;; if statement", "end"):
+            with emit.block("block", "end"):
                 parenthesized_test()
                 emit("br_if 0 ;; jump to else")
                 bracketed_block_or_single_statement(lexer, frame)
@@ -541,16 +541,16 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
         # skipping the loop body.
         # `br 0` jumps back to the beginning of the loop to re-run the test if the loop
         # body finishes.
-        with emit_block("block ;; while", "end"):
-            with emit_block("loop", "end"):
+        with emit.block("block ;; while", "end"):
+            with emit.block("loop", "end"):
                 parenthesized_test()
                 emit("br_if 1 ;; exit loop")
                 bracketed_block_or_single_statement(lexer, frame)
                 emit("br 0 ;; repeat loop")
     elif lexer.try_next("do"):
         # `do` is very similar to `while`, but the test is at the end instead.
-        with emit_block("block ;; do-while", "end"):
-            with emit_block("loop", "end"):
+        with emit.block("block ;; do-while", "end"):
+            with emit.block("loop", "end"):
                 bracketed_block_or_single_statement(lexer, frame)
                 lexer.next("while")
                 parenthesized_test()
@@ -592,14 +592,14 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
         #    Finally, before parsing the closing curly brace for the for loop, we use the saved
         #    lexer to go over the advancement statement *again*, but this time emitting code.
         #    This places the code for the advancement statement in the right place.
-        #    Perfect! All it took was some minor crimes against the god of clean code :-) 
+        #    Perfect! All it took was some minor crimes against the god of clean code :-)
         lexer.next("(")
-        with emit_block("block ;; for", "end"):
+        with emit.block("block ;; for", "end"):
             if lexer.peek().kind != ";":
                 expression(lexer, frame)
                 emit("drop ;; discard for initializer")
             lexer.next(";")
-            with emit_block("loop", "end"):
+            with emit.block("loop", "end"):
                 if lexer.peek().kind != ";":
                     load_result(expression(lexer, frame))
                     emit("i32.eqz ;; for test")
@@ -609,7 +609,7 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
                 if lexer.peek().kind != ")":
                     # save lexer position to emit advance stmt later (nasty hack)
                     saved_lexer = lexer.clone()
-                    with no_emit():
+                    with emit.no_emit():
                         expression(lexer, frame)  # advance past expr
                 lexer.next(")")
                 emit(";; for body")
@@ -676,7 +676,7 @@ def decl(global_frame: StackFrame, lexer: Lexer) -> None:
         while lexer.peek().kind == TOK_TYPE:
             variable_declaration(lexer, frame)
 
-        with emit_block(f"(func ${name.content}", ")"):
+        with emit.block(f"(func ${name.content}", ")"):
             for v in frame.variables.values():
                 if v.is_parameter:
                     emit(f"(param ${v.name} {v.type.wasmtype})")
@@ -708,7 +708,7 @@ def decl(global_frame: StackFrame, lexer: Lexer) -> None:
 def compile(src: str) -> None:
     # compile an entire file
 
-    with emit_block("(module", ")"):
+    with emit.block("(module", ")"):
         emit("(memory 2)")
         emit("(global $__stack_pointer (mut i32) (i32.const 66560))")
         emit("(func $__dup_i32 (param i32) (result i32 i32)")
