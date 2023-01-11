@@ -8,10 +8,10 @@ from typing import Callable, NoReturn
 
 
 def die(message: str, line: int | None = None) -> NoReturn:
-    location = f" on line {line + 1}" if line is not None else ""
     print("\n" + "-" * 30 + "\n", file=sys.stderr)
     traceback.print_stack()
     print("\n" + "-" * 30 + "\n", file=sys.stderr)
+    location = f" on line {line + 1}" if line is not None else ""
     print(f"error{location}: {message}", file=sys.stderr)
     sys.exit(1)
 
@@ -176,8 +176,8 @@ class CType:
     def __init__(
         self,
         typename: str,
-        pointer_level: int,
-        array_size: int | None,
+        pointer_level: int = 0,
+        array_size: int | None = None,
         line: int | None = None,
     ) -> None:
         self.typename = typename
@@ -193,8 +193,12 @@ class CType:
     def sizeof(self) -> int:
         if self.wasmtype in ("i32", "f32"):
             return 4 * (self.array_size or 1)
-        else:  # wasmtype in ("i64", "f64")
-            return 8 * (self.array_size or 1)
+        return 8 * (self.array_size or 1)
+
+    def less_pointy(self) -> "CType":
+        if self.pointer_level == 0:
+            die(f"bug: not a pointer: {self}")
+        return CType(self.typename, self.pointer_level - 1, self.array_size)
 
 
 def parse_type_and_name(lexer: Lexer, type: str | None = None) -> tuple[CType, Token]:
@@ -237,21 +241,14 @@ class StackFrame:
         self.variables[name] = FrameVar(name, type, self.frame_size, is_parameter)
         self.frame_size += type.sizeof()
 
-    def lookup_var_and_offset(self, name: str) -> tuple[FrameVar, int] | None:
-        if name in self.variables:
-            slot = self.variables[name]
+    def get_var_and_offset(self, name: Token | str) -> tuple[FrameVar, int]:
+        n = name if isinstance(name, str) else name.content
+        if slot := self.variables.get(n):
             return slot, self.frame_offset + slot.local_offset
         elif self.parent is not None:
-            return self.parent.lookup_var_and_offset(name)
+            return self.parent.get_var_and_offset(name)
         else:
-            return None
-
-    def get_offset(self, name: Token | str) -> int:
-        n = name if isinstance(name, str) else name.content
-        slot_and_offset = self.lookup_var_and_offset(n)
-        if slot_and_offset is None:
             die(f"unknown variable {n}", None if isinstance(name, str) else name.line)
-        return slot_and_offset[1]
 
 
 def emit_return(frame: StackFrame) -> None:
@@ -268,26 +265,19 @@ class ExprMeta:
     # a place (corresponding to an address) that can be loaded from / stored to
     # not all addresses are places, e.g. &x is a value (&x = 1 is meaningless)
     is_place: bool
+    type: CType
 
-    @staticmethod
-    def value() -> "ExprMeta":
-        return ExprMeta(is_place=False)
-
-    @staticmethod
-    def place() -> "ExprMeta":
-        return ExprMeta(is_place=True)
-
-
-def load_result(em: ExprMeta) -> None:
+def load_result(em: ExprMeta) -> ExprMeta:
     if em.is_place:
         emit("i32.load")
+    return ExprMeta(False, em.type)
 
 
 def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
     def value() -> ExprMeta:
         if const := lexer.try_next(TokenKind.IntConst):
             emit(f"i32.const {const.content}")
-            return ExprMeta.value()
+            return ExprMeta(False, CType("int"))
         elif lexer.try_next(TokenKind.OpenParen):
             meta = expression(lexer, frame)
             lexer.next(TokenKind.CloseParen)
@@ -302,52 +292,57 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
                             break
                 lexer.next(TokenKind.CloseParen)
                 emit(f"call ${varname.content}")
-                return ExprMeta.value()
+                return ExprMeta(False, CType("int"))  # TODO!!
             else:
+                var, offset = frame.get_var_and_offset(varname)
                 emit(f";; load {varname.content}")
                 emit("global.get $__stack_pointer")
-                emit(f"i32.const {frame.get_offset(varname)}")
+                emit(f"i32.const {offset}")
                 emit("i32.add")
-                return ExprMeta.place()
+                return ExprMeta(True, var.type)
 
     def accessor() -> ExprMeta:
-        lhs_kind = value()  # TODO: this is wrong for x[0][0], right?
+        lhs_meta = value()  # TODO: this is wrong for x[0][0], right?
         if lexer.try_next(TokenKind.OpenSq):
-            load_result(lhs_kind)
+            load_result(lhs_meta)
             load_result(expression(lexer, frame))
             lexer.next(TokenKind.CloseSq)
             emit("i32.const 4")  # TODO: this is wrong for non-4-byte types
             emit("i32.mul")
             emit("i32.add")
-            return ExprMeta.place()
+            # strip array size
+            newtype = CType(lhs_meta.type.typename, lhs_meta.type.pointer_level)
+            return ExprMeta(True, newtype)
         else:
-            return lhs_kind
+            return lhs_meta
 
     def prefix() -> ExprMeta:
         if lexer.try_next(TokenKind.Ampersand):
-            if not prefix().is_place:
+            meta = prefix()
+            if not meta.is_place:
                 die("cannot take reference to value")
-            return ExprMeta.value()
+            mt = meta.type
+            newtype = CType(mt.typename, mt.pointer_level + 1, mt.array_size)
+            return ExprMeta(False, newtype)
         elif lexer.try_next(TokenKind.Star):
-            load_result(prefix())
-            return ExprMeta.place()
+            meta = load_result(prefix())
+            return ExprMeta(True, meta.type.less_pointy())
         elif lexer.try_next(TokenKind.Minus):
             emit("i32.const 0")
-            load_result(prefix())
+            meta = load_result(prefix())
             emit("i32.sub")
-            return ExprMeta.value()
+            return meta
         elif lexer.try_next(TokenKind.Plus):
-            load_result(prefix())
-            return ExprMeta.value()
+            return load_result(prefix())
         elif lexer.try_next(TokenKind.Bang):
-            load_result(prefix())
+            meta = load_result(prefix())
             emit("i32.eqz")
-            return ExprMeta.value()
+            return meta
         elif lexer.try_next(TokenKind.Tilde):
-            load_result(prefix())
+            meta = load_result(prefix())
             emit("i32.const 0xffffffff")
             emit("i32.xor")
-            return ExprMeta.value()
+            return meta
         else:
             return accessor()
 
@@ -355,14 +350,14 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
         higher: Callable[[], ExprMeta], ops: dict[TokenKind, str]
     ) -> Callable[[], ExprMeta]:
         def op() -> ExprMeta:
-            higher_kind = higher()
+            lhs_meta = higher()
             if lexer.peek().kind in ops.keys():
-                load_result(higher_kind)
+                lhs_meta = load_result(lhs_meta)
                 op_token = lexer.next()
                 load_result(op())
                 emit(f"{ops[op_token.kind]}")
-                return ExprMeta.value()
-            return higher_kind
+                return ExprMeta(False, lhs_meta.type)
+            return lhs_meta
 
         return op
 
@@ -374,7 +369,38 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
             TokenKind.Percent: "i32.rem_s",
         },
     )
-    plusminus = makeop(muldiv, {TokenKind.Plus: "i32.add", TokenKind.Minus: "i32.sub"})
+
+    def plusminus() -> ExprMeta:
+        lhs_meta = muldiv()
+        if lexer.peek().kind in (TokenKind.Plus, TokenKind.Minus):
+            lhs_meta = load_result(lhs_meta)
+            op_token = lexer.next()
+            rhs_meta = load_result(plusminus())
+            rtype = lhs_meta.type
+            if lhs_meta.type.pointer_level == rhs_meta.type.pointer_level:
+                pass
+            elif lhs_meta.type.pointer_level > 0 and rhs_meta.type.pointer_level > 0:
+                die(f"cannot {op_token.kind.value} {lhs_meta.type} and {rhs_meta.type}")
+            elif lhs_meta.type.pointer_level > 0 and rhs_meta.type.pointer_level == 0:
+                emit(f"i32.const {lhs_meta.type.less_pointy().sizeof()}")
+                emit("i32.mul")
+            elif lhs_meta.type.pointer_level == 0 and rhs_meta.type.pointer_level > 0:
+                rtype = rhs_meta.type
+                emit("call $__swap_i32")
+                emit(f"i32.const {rhs_meta.type.less_pointy().sizeof()}")
+                emit("i32.mul")
+                emit("call $__swap_i32")
+            emit("i32.add" if op_token.kind == TokenKind.Plus else "i32.sub")
+            if (
+                lhs_meta.type.pointer_level > 0
+                and rhs_meta.type.pointer_level > 0
+                and op_token.kind == TokenKind.Minus
+            ):
+                emit(f"i32.const {rhs_meta.type.less_pointy().sizeof()}")
+                emit(f"i32.div_s")
+            return ExprMeta(False, rtype)
+        return lhs_meta
+
     shlr = makeop(plusminus, {TokenKind.Shl: "i32.shl", TokenKind.Shr: "i32.shr_s"})
     cmplg = makeop(
         shlr,
@@ -391,16 +417,16 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
     xor = makeop(bitor, {TokenKind.Caret: "i32.xor"})
 
     def assign() -> ExprMeta:
-        lhs_kind = xor()
+        lhs_meta = xor()
         if lexer.try_next(TokenKind.Equals):
-            if not lhs_kind.is_place:
+            if not lhs_meta.is_place:
                 die("lhs of assignment cannot be value", lexer.line)
             emit("call $__dup_i32")  # save addr
-            load_result(assign())
+            rhs_meta = load_result(assign())
             emit("i32.store")
             emit("i32.load")  # use dup'd addr
-            return ExprMeta.value()
-        return lhs_kind
+            return rhs_meta
+        return lhs_meta
 
     return assign()
 
@@ -456,15 +482,13 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
         lexer.next(TokenKind.OpenParen)
         with emit_block("block ;; for", "end"):
             if lexer.peek().kind != TokenKind.Semicolon:
-                emit(";; for initializer")
                 expression(lexer, frame)
-                emit("drop")
+                emit("drop ;; discard for initializer")
             lexer.next(TokenKind.Semicolon)
             with emit_block("loop", "end"):
                 if lexer.peek().kind != TokenKind.Semicolon:
-                    emit(";; for test")
                     load_result(expression(lexer, frame))
-                    emit("i32.eqz")
+                    emit("i32.eqz ;; for test")
                     emit("br_if 1 ;; exit loop")
                 lexer.next(TokenKind.Semicolon)
                 saved_lexer = None
@@ -485,7 +509,7 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
     else:
         expression(lexer, frame)
         lexer.next(TokenKind.Semicolon)
-        emit("drop")
+        emit("drop ;; discard statement expr result")
 
 
 def variable_declaration(lexer: Lexer, frame: StackFrame) -> None:
@@ -537,7 +561,7 @@ def decl(global_frame: StackFrame, lexer: Lexer) -> None:
             for v in reversed(frame.variables.values()):
                 if v.is_parameter:
                     emit("global.get $__stack_pointer")
-                    emit(f"i32.const {frame.get_offset(v.name)}")
+                    emit(f"i32.const {frame.get_var_and_offset(v.name)[1]}")
                     emit("i32.add")
                     emit(f"local.get ${v.name}")
                     emit("i32.store")
@@ -558,8 +582,9 @@ def compile(src: str) -> None:
         emit("(memory 2)")
         emit("(global $__stack_pointer (mut i32) (i32.const 66560))")
         emit("(func $__dup_i32 (param i32) (result i32 i32)")
-        emit("  (local.get 0)")
-        emit("  (local.get 0))")
+        emit("  (local.get 0) (local.get 0))")
+        emit("(func $__swap_i32 (param i32) (param i32) (result i32 i32)")
+        emit("  (local.get 1) (local.get 0))")
 
         global_frame = StackFrame()
         lexer = Lexer(src)
