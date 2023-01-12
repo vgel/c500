@@ -64,7 +64,7 @@ class Token:
 
 
 # default types
-TYPES: dict[str, str] = {"int": "int"}
+TYPES: dict[str, str] = {t: t for t in ("int",)}
 
 
 class Lexer:
@@ -77,11 +77,32 @@ class Lexer:
     def clone(self) -> "Lexer":
         return Lexer(self.src, self.loc, self.line, self.types.copy())
 
+    def _skip_comment(self):
+        if self.src[self.loc :].startswith("//"):
+            while self.loc < len(self.src) and self.src[self.loc] != "\n":
+                self.loc += 1
+            return True
+        elif self.src[self.loc :].startswith("/*"):
+            start_line = self.line
+            self.loc += 2
+            while True:
+                if self.loc >= len(self.src):
+                    die("unterminated multi-line comment", start_line)
+                if self.src[self.loc :].startswith("*/"):
+                    self.loc += 2
+                    return True
+                elif self.src[self.loc] == "\n":
+                    self.line += 1
+                self.loc += 1
+        return False
+
     def peek(self) -> Token:
         """Peek at the next token without consuming it. Consumes whitespace."""
 
         # skip past whitespace
-        while self.loc < len(self.src) and self.src[self.loc] in " \t\n":
+        while self.loc < len(self.src) and (
+            self._skip_comment() or self.src[self.loc] in " \t\n"
+        ):
             if self.src[self.loc] == "\n":
                 self.line += 1
             self.loc += 1
