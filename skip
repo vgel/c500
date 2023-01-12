@@ -1,16 +1,20 @@
+96 # global multi declarations
+38 # sizeof
+33 # logic
+25 # string, strlen
+26 # string
+58 # string
+57 # types, sizeof
+
 10 # goto
 17 # struct
 18 # struct
 19 # struct
 24 # struct
-25 # string
-26 # string
 31 # crement
 32 # crement
-33 # logic
 34 # break
 36 # assignop
-38 # sizeof
 39 # cast
 40 # include
 41 # crement
@@ -29,9 +33,6 @@
 54 # enum
 55 # enum
 56 # include
-57 # types, sizeof
-58 # string
-59 # types
 61 # preprocessor
 62 # preprocessor
 63 # preprocessor
@@ -61,6 +62,7 @@
 87 # struct, funcptr
 88 # funcptr
 89 # struct, funcptr
+90 # arraydecl
 91 # struct
 92 # arraydecl
 93 # arraydecl
