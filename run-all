@@ -9,6 +9,7 @@ max=$(find "$testdir" -name '*.c' | wc -l)
 
 limit="${1:-$max}"
 passed="0"
+failures=""
 echo "running $limit"
 
 echo -ne "0\t"
@@ -20,6 +21,7 @@ do
         echo -ne "\033[0;33mx\033[0m"
     elif ! ./run-test "$cfile" &>/dev/null
     then
+        failures="$failures $i"
         echo -ne "\033[0;31mx\033[0m"
     else
         echo -ne "\033[0;32mx\033[0m"
@@ -35,3 +37,7 @@ do
     fi
 done
 echo -e "\npassed $passed/$limit"
+if [ ! -z "$failures" ]
+then
+    echo "failures:$failures"
+fi
