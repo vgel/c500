@@ -383,7 +383,11 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
             return ExprMeta(False, CType("int"))
         elif const := lexer.try_next(TOK_STRCONST):
             # i keep writing cursed code and it keeps working
-            emit(f"i32.const {str_pool.add(eval(const.content).encode('ascii'))}")
+            s = eval(const.content).encode('ascii')
+            # support pasting: `char* p = "abc" "def";`
+            while const := lexer.try_next(TOK_STRCONST):
+                s += eval(const.content).encode('ascii')
+            emit(f"i32.const {str_pool.add(s)}")
             return ExprMeta(False, CType("char", pointer_level=1))
         elif lexer.try_next("("):
             meta = expression(lexer, frame)
@@ -468,15 +472,10 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
             if lexer.peek().kind in ops.keys():
                 lhs_meta = load_result(lhs_meta)
                 op_token = lexer.next()
-                rhs_meta = load_result(op())
+                load_result(op())
 
-                l_ty, r_ty = lhs_meta.type, rhs_meta.type
-                incompat = l_ty.is_ptr() or l_ty.is_arr()
-                incompat = incompat or r_ty.is_ptr() or r_ty.is_arr()
-                incompat = incompat or l_ty.typename != r_ty.typename
-                if incompat:
-                    # TODO: coercion
-                    die(f"cannot {op_token.kind} {l_ty} and {r_ty}", lexer.line)
+                # TODO: type checking?
+
                 emit(f"{ops[op_token.kind]}")
                 mask_to_sizeof(lhs_meta.type)
                 return ExprMeta(False, lhs_meta.type)
