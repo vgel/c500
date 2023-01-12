@@ -54,6 +54,7 @@ TOK_EOF = "Eof"
 TOK_TYPE = "Type"
 TOK_NAME = "Name"
 TOK_INTCONST = "IntConst"
+TOK_CHARCONST = "CharConst"
 
 
 @dataclasses.dataclass
@@ -128,6 +129,11 @@ class Lexer:
         m = re.match(r"^[0-9]+", self.src[self.loc :])
         if m is not None:
             return Token(kind=TOK_INTCONST, content=m.group(0), line=self.line)
+
+        # char constants
+        m = re.match(r"""^'(\\[abfnrtv'"?]|[^'])'""", self.src[self.loc :])
+        if m is not None:
+            return Token(kind=TOK_CHARCONST, content=m.group(0), line=self.line)
 
         # other tokens not caught by the identifier-like-token check above
         for token_kind in LITERAL_TOKENS:
@@ -324,6 +330,10 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
     def value() -> ExprMeta:
         if const := lexer.try_next(TOK_INTCONST):
             emit(f"i32.const {const.content}")
+            return ExprMeta(False, CType("int"))
+        elif const := lexer.try_next(TOK_CHARCONST):
+            emit(f"i32.const {ord(eval(const.content))}") # cursed, but it works
+            # character constants are integers in c, not char
             return ExprMeta(False, CType("int"))
         elif lexer.try_next("("):
             meta = expression(lexer, frame)
