@@ -81,13 +81,8 @@ str_pool = StringPool()
 
 
 LITERAL_TOKENS = "typedef if else while do for return ++ -- << >> && || == <= >= != < > ( ) { } [ ] ; = + - * / % & | ^ , ! ~".split()
-TOK_INVALID = "Invalid"
-TOK_EOF = "Eof"
-TOK_TYPE = "Type"
-TOK_NAME = "Name"
-TOK_INTCONST = "IntConst"
-TOK_CHARCONST = "CharConst"
-TOK_STRCONST = "StrConst"
+TOK_INVALID, TOK_EOF, TOK_TYPE, TOK_NAME = "Invalid", "Eof", "Type", "Name"
+TOK_INTCONST, TOK_CHARCONST, TOK_STRCONST = "IntConst", "CharConst", "StrConst"
 
 
 @dataclasses.dataclass
@@ -259,6 +254,18 @@ class CType:
         assert self.is_arr(), f"bug: not an array: {self}"
         return CType(self.typename, self.pointer_level, None)
 
+    def load_ins(self) -> str:
+        size = (self.as_non_array() if self.is_arr() else self).sizeof()
+        if size not in (1, 2, 4):
+            die(f"unsupported sizeof for load: {self}")
+        return ["", "i32.load8_s", "i32.load16_s", "", "i32.load"][size]
+
+    def store_ins(self) -> str:
+        size = (self.as_non_array() if self.is_arr() else self).sizeof()
+        if size not in (1, 2, 4):
+            die(f"unsupported sizeof for store: {self}")
+        return ["", "i32.store8", "i32.store16", "", "i32.store"][size]
+
     def __str__(self) -> str:
         s = self.typename + "*" * self.pointer_level
         if self.array_size is not None:
@@ -360,7 +367,7 @@ class ExprMeta:
 def load_result(em: ExprMeta) -> ExprMeta:
     """Load a place `ExprMeta`, turning it into a value `ExprMeta` of the same type"""
     if em.is_place:
-        emit("i32.load")  # TODO: possibly need to load smaller type
+        emit(em.type.load_ins())
     return ExprMeta(False, em.type)
 
 
@@ -383,10 +390,10 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
             return ExprMeta(False, CType("int"))
         elif const := lexer.try_next(TOK_STRCONST):
             # i keep writing cursed code and it keeps working
-            s = eval(const.content).encode('ascii')
+            s = eval(const.content).encode("ascii")
             # support pasting: `char* p = "abc" "def";`
             while const := lexer.try_next(TOK_STRCONST):
-                s += eval(const.content).encode('ascii')
+                s += eval(const.content).encode("ascii")
             emit(f"i32.const {str_pool.add(s)}")
             return ExprMeta(False, CType("char", pointer_level=1))
         elif lexer.try_next("("):
@@ -465,7 +472,7 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
     # function for generating simple operator precedence levels from declarative
     # dictionaries of { token: instruction_to_emit }
     def makeop(
-        higher: Callable[[], ExprMeta], ops: dict[str, str]
+        higher: Callable[[], ExprMeta], ops: dict[str, str], rtype: CType | None = None
     ) -> Callable[[], ExprMeta]:
         def op() -> ExprMeta:
             lhs_meta = higher()
@@ -477,7 +484,7 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
                 # TODO: type checking?
 
                 emit(f"{ops[op_token.kind]}")
-                mask_to_sizeof(lhs_meta.type)
+                mask_to_sizeof(rtype or lhs_meta.type)
                 return ExprMeta(False, lhs_meta.type)
             return lhs_meta
 
@@ -539,8 +546,9 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
             "<=": "i32.le_s",
             ">=": "i32.ge_s",
         },
+        CType("int"),
     )
-    cmpe = makeop(cmplg, {"==": "i32.eq", "!=": "i32.ne"})
+    cmpe = makeop(cmplg, {"==": "i32.eq", "!=": "i32.ne"}, CType("int"))
     bitand = makeop(cmpe, {"&": "i32.and"})
     bitor = makeop(bitand, {"|": "i32.or"})
     xor = makeop(bitor, {"^": "i32.xor"})
@@ -552,13 +560,12 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
                 die("lhs of assignment cannot be value", lexer.line)
             emit("call $__dup_i32")  # save copy of addr for later
             rhs_meta = load_result(assign())
-            # TODO: handle store of smaller types (remember sign bit!)
-            emit("i32.store")
+
+            emit(lhs_meta.type.store_ins())
             # use the saved address to immediately reload the value
             # this is slower than saving the value we just wrote, but easier to codegen :-)
             # this is needed for expressions like x = (y = 1)
-            # TODO: handle load of smaller types (remember sign bit!)
-            emit("i32.load")
+            emit(lhs_meta.type.load_ins())
             return rhs_meta
         return lhs_meta
 

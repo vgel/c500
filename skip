@@ -2,7 +2,6 @@
 38 # sizeof
 33 # logic
 25 # string, strlen
-58 # string
 57 # types, sizeof
 
 10 # goto
