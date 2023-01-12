@@ -5,6 +5,8 @@ import sys
 import traceback
 from typing import Callable, NoReturn
 
+PAGE_SIZE = 65536  # webassembly native page size
+
 
 def die(message: str, line: int | None = None) -> NoReturn:
     """Print the message with a traceback, along with a line number if supplied, and exit."""
@@ -48,6 +50,36 @@ class Emitter:
 emit = Emitter()
 
 
+class StringPool:
+    def __init__(self):
+        self.base = self.current = PAGE_SIZE  # grows upwards
+        self.strs: dict[bytes, int] = {}
+
+    def add(self, s: bytes) -> int:
+        s = s + b"\0"
+        if s not in self.strs:
+            self.strs[s] = self.current
+            self.current += len(s)
+            if self.current - self.base > PAGE_SIZE:
+                die("string pool too large")
+        return self.strs[s]
+
+    def pooled(self) -> str:
+        """Make a webassembly str expression representing all the pooled strs"""
+
+        def escape(c: int) -> str:
+            if 31 < c < 127 and chr(c) not in '\\"':
+                return chr(c)
+            else:
+                return f"\\{hex(c)[2:].rjust(2, '0')}"
+
+        # python dicts preserve insertion order
+        return "".join(escape(c) for b in self.strs.keys() for c in b)
+
+
+str_pool = StringPool()
+
+
 LITERAL_TOKENS = "typedef if else while do for return ++ -- << >> && || == <= >= != < > ( ) { } [ ] ; = + - * / % & | ^ , ! ~".split()
 TOK_INVALID = "Invalid"
 TOK_EOF = "Eof"
@@ -55,6 +87,7 @@ TOK_TYPE = "Type"
 TOK_NAME = "Name"
 TOK_INTCONST = "IntConst"
 TOK_CHARCONST = "CharConst"
+TOK_STRCONST = "StrConst"
 
 
 @dataclasses.dataclass
@@ -65,7 +98,7 @@ class Token:
 
 
 # default types
-TYPES: dict[str, str] = {t: t for t in ("int",)}
+TYPES: dict[str, str] = {t: t for t in ("int", "char")}
 
 
 class Lexer:
@@ -130,10 +163,16 @@ class Lexer:
         if m is not None:
             return Token(kind=TOK_INTCONST, content=m.group(0), line=self.line)
 
+        escape = r"""(\\([\\abfnrtv'"?]|[0-7]{1,3}|x[A-Fa-f0-9]{1,2}))"""
         # char constants
-        m = re.match(r"""^'(\\[abfnrtv'"?]|[^'])'""", self.src[self.loc :])
+        m = re.match(r"^'([^'\\]|" + escape + r")'", self.src[self.loc :])
         if m is not None:
             return Token(kind=TOK_CHARCONST, content=m.group(0), line=self.line)
+
+        # string constants
+        m = re.match(r'^"([^"\\]|' + escape + r')*?(?<!\\)"', self.src[self.loc :])
+        if m is not None:
+            return Token(kind=TOK_STRCONST, content=m.group(0), line=self.line)
 
         # other tokens not caught by the identifier-like-token check above
         for token_kind in LITERAL_TOKENS:
@@ -162,6 +201,7 @@ class Lexer:
         return self.next()
 
 
+@dataclasses.dataclass
 class CType:
     """
     Represents a C type.
@@ -171,30 +211,28 @@ class CType:
     * `decl_line`: if provided, used as the line number when printing errors related to this type
     """
 
-    def __init__(
-        self,
-        typename: str,
-        pointer_level: int = 0,
-        array_size: int | None = None,
-        decl_line: int | None = None,
-    ) -> None:
-        self.typename = typename
-        self.pointer_level = pointer_level
-        self.array_size = array_size
-        self.decl_line = decl_line
-        is_pointy = pointer_level > 0 or array_size is not None
-        if is_pointy or typename == "int":
-            self.wasmtype = "i32"
-        else:
-            die(f"unknown type: {typename}", decl_line)
+    typename: str
+    pointer_level: int = 0
+    array_size: int | None = None
+    decl_line: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.typename not in ("char", "int"):
+            die(f"unknown type: {self.typename}", self.decl_line)
+        self.signed = True  # TODO: support unsigned
+        # wasm only supports a i32, i64, f32, and f64. narrower integers need
+        # to be supported with masking.
+        # todo: if we ever support 8-byte types or floats
+        self.wasmtype = "i32"
 
     def sizeof(self) -> int:
         """Size of this type, in bytes."""
 
-        if self.wasmtype in ("i32", "f32"):
+        if self.typename == "char" and not self.is_ptr() and not self.is_arr():
+            return 1 * (self.array_size or 1)
+        elif self.wasmtype in ("i32", "f32"):
             return 4 * (self.array_size or 1)
-
-        return 8 * (self.array_size or 1)
+        die(f"bug: unsupported type {self}")
 
     def is_ptr(self) -> bool:
         """Whether this type is a pointer or not. Returns false for arrays of non-pointers like int _[5]."""
@@ -322,8 +360,15 @@ class ExprMeta:
 def load_result(em: ExprMeta) -> ExprMeta:
     """Load a place `ExprMeta`, turning it into a value `ExprMeta` of the same type"""
     if em.is_place:
-        emit("i32.load")
+        emit("i32.load")  # TODO: possibly need to load smaller type
     return ExprMeta(False, em.type)
+
+
+def mask_to_sizeof(t: CType):
+    """Mask an i32 down to the appropriate size after an operation"""
+    if not (t.is_arr() or t.is_ptr() or t.sizeof() == 4):
+        emit(f"i32.const {hex(2**(8*t.sizeof()-t.signed)-1)}")
+        emit(f"i32.and")
 
 
 def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
@@ -332,9 +377,14 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
             emit(f"i32.const {const.content}")
             return ExprMeta(False, CType("int"))
         elif const := lexer.try_next(TOK_CHARCONST):
-            emit(f"i32.const {ord(eval(const.content))}") # cursed, but it works
+            # cursed, but it works
+            emit(f"i32.const {ord(eval(const.content))}")
             # character constants are integers in c, not char
             return ExprMeta(False, CType("int"))
+        elif const := lexer.try_next(TOK_STRCONST):
+            # i keep writing cursed code and it keeps working
+            emit(f"i32.const {str_pool.add(eval(const.content).encode('ascii'))}")
+            return ExprMeta(False, CType("char", pointer_level=1))
         elif lexer.try_next("("):
             meta = expression(lexer, frame)
             lexer.next(")")
@@ -349,7 +399,7 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
                             break
                 lexer.next(")")
                 emit(f"call ${varname.content}")
-                return ExprMeta(False, CType("int"))  # TODO!!
+                return ExprMeta(False, CType("int"))  # TODO return type
             else:
                 var, offset = frame.get_var_and_offset(varname)
                 emit(f";; load {varname.content}")
@@ -362,12 +412,10 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
         lhs_meta = value()  # TODO: this is wrong for x[0][0], right?
         if lexer.try_next("["):
             lhs_meta = load_result(lhs_meta)
-            lhs_type = lhs_meta.type
-            if not (lhs_type.is_arr() or lhs_type.is_ptr()):
+            l_type = lhs_meta.type
+            if not (l_type.is_arr() or l_type.is_ptr()):
                 die(f"not an array or pointer: {lhs_meta.type}", lexer.line)
-            el_type = (
-                lhs_type.as_non_array() if lhs_type.is_arr() else lhs_type.less_ptr()
-            )
+            el_type = l_type.as_non_array() if l_type.is_arr() else l_type.less_ptr()
 
             load_result(expression(lexer, frame))
             lexer.next("]")
@@ -393,6 +441,7 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
             emit("i32.const 0")
             meta = load_result(prefix())
             emit("i32.sub")
+            mask_to_sizeof(meta.type)
             return meta
         elif lexer.try_next("+"):
             return load_result(prefix())
@@ -404,6 +453,7 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
             meta = load_result(prefix())
             emit("i32.const 0xffffffff")
             emit("i32.xor")
+            mask_to_sizeof(meta.type)
             return meta
         else:
             return accessor()
@@ -418,8 +468,17 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
             if lexer.peek().kind in ops.keys():
                 lhs_meta = load_result(lhs_meta)
                 op_token = lexer.next()
-                load_result(op())
+                rhs_meta = load_result(op())
+
+                l_ty, r_ty = lhs_meta.type, rhs_meta.type
+                incompat = l_ty.is_ptr() or l_ty.is_arr()
+                incompat = incompat or r_ty.is_ptr() or r_ty.is_arr()
+                incompat = incompat or l_ty.typename != r_ty.typename
+                if incompat:
+                    # TODO: coercion
+                    die(f"cannot {op_token.kind} {l_ty} and {r_ty}", lexer.line)
                 emit(f"{ops[op_token.kind]}")
+                mask_to_sizeof(lhs_meta.type)
                 return ExprMeta(False, lhs_meta.type)
             return lhs_meta
 
@@ -429,6 +488,7 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
 
     def plusminus() -> ExprMeta:
         lhs_meta = muldiv()
+
         if lexer.peek().kind in ("+", "-"):
             lhs_meta = load_result(lhs_meta)
             op_token = lexer.next()
@@ -464,8 +524,11 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
                 #  certainly do the strength reduction for us)
                 emit(f"i32.const {rhs_meta.type.less_ptr().sizeof()}")
                 emit(f"i32.div_s")
+                res_type = CType("int")
 
+            mask_to_sizeof(res_type)
             return ExprMeta(False, res_type)
+
         return lhs_meta
 
     shlr = makeop(plusminus, {"<<": "i32.shl", ">>": "i32.shr_s"})
@@ -490,10 +553,12 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
                 die("lhs of assignment cannot be value", lexer.line)
             emit("call $__dup_i32")  # save copy of addr for later
             rhs_meta = load_result(assign())
+            # TODO: handle store of smaller types (remember sign bit!)
             emit("i32.store")
             # use the saved address to immediately reload the value
             # this is slower than saving the value we just wrote, but easier to codegen :-)
             # this is needed for expressions like x = (y = 1)
+            # TODO: handle load of smaller types (remember sign bit!)
             emit("i32.load")
             return rhs_meta
         return lhs_meta
@@ -714,7 +779,7 @@ def decl(global_frame: StackFrame, lexer: Lexer) -> None:
             emit(f"(result {decl_type.wasmtype})")
             emit(";; fn prelude")
             emit("global.get $__stack_pointer")
-            emit(f"i32.const {frame.frame_size}")
+            emit(f"i32.const {frame.frame_offset + frame.frame_size}")
             emit("i32.sub")
             emit("global.set $__stack_pointer")
             for v in reversed(frame.variables.values()):
@@ -740,8 +805,8 @@ def compile(src: str) -> None:
     # compile an entire file
 
     with emit.block("(module", ")"):
-        emit("(memory 2)")
-        emit("(global $__stack_pointer (mut i32) (i32.const 66560))")
+        emit("(memory 3)")
+        emit(f"(global $__stack_pointer (mut i32) (i32.const {PAGE_SIZE * 3}))")
         emit("(func $__dup_i32 (param i32) (result i32 i32)")
         emit("  (local.get 0) (local.get 0))")
         emit("(func $__swap_i32 (param i32) (param i32) (result i32 i32)")
@@ -753,6 +818,9 @@ def compile(src: str) -> None:
             decl(global_frame, lexer)
 
         emit('(export "main" (func $main))')
+
+        # emit str_pool data section
+        emit(f'(data $.rodata (i32.const {str_pool.base}) "{str_pool.pooled()}")')
 
 
 if __name__ == "__main__":
