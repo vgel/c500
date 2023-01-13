@@ -92,19 +92,15 @@ class Token:
     line: int
 
 
-# default types
-TYPES: dict[str, str] = {t: t for t in ("int", "char")}
-
-
 class Lexer:
-    def __init__(self, src: str, loc=0, line=0, types: dict[str, str] = TYPES) -> None:
+    def __init__(self, src: str, types: set[str], loc=0, line=0) -> None:
         self.src = src
         self.loc = loc
         self.line = line
         self.types = types
 
     def clone(self) -> "Lexer":
-        return Lexer(self.src, self.loc, self.line, self.types.copy())
+        return Lexer(self.src, self.types.copy(), self.loc, self.line)
 
     def _skip_comment(self):
         if self.src[self.loc :].startswith("//"):
@@ -273,30 +269,30 @@ class CType:
         return s
 
 
-def parse_type_and_name(lexer: Lexer, type: str | None = None) -> tuple[CType, Token]:
+typedefs: dict[str, CType] = {}
+
+
+def parse_type_and_name(lexer: Lexer, prev_t: str | None = None) -> tuple[CType, Token]:
     """
-    Parse a type and variable name like `int** x[5]`. If `type` is provided,
+    Parse a type and variable name like `int** x[5]`. If `prev_t` is provided,
     it will be used instead of trying to eat a new type token from the lexer,
     to support parsing a type in a comma-separated declaration like `int x, *y;`.
     """
-    if type is None:
-        # resolve the typedef, if applicable, which was previously stored in the lexer
-        # (lexer hack!) otherwise will use the identity mapping (e.g. int: int) added
-        # to the lexer on init.
-        type = lexer.types[lexer.next(TOK_TYPE).content]
 
-    pointer_level = 0
+    typename = prev_t or lexer.next(TOK_TYPE).content
+    # dataclasses.replace makes a copy so we can mutate it freely
+    type = dataclasses.replace(typedefs.get(typename) or CType(typename))
+    type.decl_line = lexer.line
+
     while lexer.try_next("*"):
-        pointer_level += 1
+        type.pointer_level += 1
 
     varname = lexer.next(TOK_NAME)
     if lexer.try_next("["):
-        array_size = int(lexer.next(TOK_INTCONST).content)
+        type.array_size = int(lexer.next(TOK_INTCONST).content)
         lexer.next("]")
-    else:
-        array_size = None
 
-    return CType(type, pointer_level, array_size, varname.line), varname
+    return type, varname
 
 
 @dataclasses.dataclass
@@ -733,12 +729,18 @@ def variable_declaration(lexer: Lexer, frame: StackFrame) -> None:
     # the only thing each element in that list shares is the typename.
     # adds each parsed variable to the provided stack frame.
 
+    # we need to explicitly grab this in case it's a typedef--the return type will have
+    # the resolved typename, so if get back `int*` we don't know if the decl was
+    # `typedef int* foo; foo x, *y` or `int *x, *y` -- in the first case y should be `int**`,
+    # but in the second it should be `int*`
+    prev_typename = lexer.peek().content
+    # however we don't use prev_typename for the first call, because we want parse_type_and_name to
+    # still eat the typename
     type, varname = parse_type_and_name(lexer)
     frame.add_var(varname.content, type)
 
     while lexer.try_next(","):
-        # used the saved type from before
-        type, varname = parse_type_and_name(lexer, type=type.typename)
+        type, varname = parse_type_and_name(lexer, prev_typename)
         frame.add_var(varname.content, type)
 
     lexer.next(";")
@@ -748,10 +750,12 @@ def decl(global_frame: StackFrame, lexer: Lexer) -> None:
     # parse a global declaration -- typedef, global variable, or function.
 
     if lexer.try_next("typedef"):
-        type = lexer.next(TOK_TYPE)
-        name = lexer.next(TOK_NAME)
+        # yes, `typedef int x[24];` is valid (but weird) c
+        type, name = parse_type_and_name(lexer)
         # lexer hack!
-        lexer.types[name.content] = type.content
+        lexer.types.add(name.content)
+        typedefs[name.content] = type
+
         lexer.next(";")
         return
 
@@ -819,7 +823,7 @@ def compile(src: str) -> None:
         emit("  (local.get 1) (local.get 0))")
 
         global_frame = StackFrame()
-        lexer = Lexer(src)
+        lexer = Lexer(src, set(["int", "char", "short", "long", "float", "double"]))
         while lexer.peek().kind != TOK_EOF:
             decl(global_frame, lexer)
 
