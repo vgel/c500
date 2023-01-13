@@ -798,7 +798,7 @@ def decl(global_frame: StackFrame, lexer: Lexer) -> None:
                     emit(f"i32.const {frame.get_var_and_offset(v.name)[1]}")
                     emit("i32.add")
                     emit(f"local.get ${v.name}")
-                    emit("i32.store")
+                    emit(v.type.store_ins())
 
             while lexer.peek().kind != "}":
                 statement(lexer, frame)
