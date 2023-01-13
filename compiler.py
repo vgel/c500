@@ -751,6 +751,7 @@ def decl(global_frame: StackFrame, lexer: Lexer) -> None:
     if lexer.try_next(";"):
         # variable declaration
         global_frame.add_var(name.content, decl_type, False)
+        return
 
     # otherwise, we're declaring a function (or, there's an = sign and this is
     # a global array initialization, which we don't support)
@@ -759,13 +760,11 @@ def decl(global_frame: StackFrame, lexer: Lexer) -> None:
 
     frame = StackFrame(global_frame)
     lexer.next("(")
-    if lexer.peek().kind != ")":
-        while True:
-            type, varname = parse_type_and_name(lexer)
-            frame.add_var(varname.content, type, is_parameter=True)
-            if not lexer.try_next(","):
-                break
-    lexer.next(")")
+    while not lexer.try_next(")"):
+        type, varname = parse_type_and_name(lexer)
+        frame.add_var(varname.content, type, is_parameter=True)
+        if lexer.peek().kind != ")":
+            lexer.try_next(",")
 
     lexer.next("{")
     # declarations (up top, c89 only yolo)
