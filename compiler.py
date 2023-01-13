@@ -102,7 +102,12 @@ class Lexer:
     def clone(self) -> "Lexer":
         return Lexer(self.src, self.types.copy(), self.loc, self.line)
 
-    def _skip_comment(self):
+    def _skip_comment_ws(self) -> bool:
+        """
+        Tries to skips past one comment or whitespace character.
+        Returns True if one was present, False otherwise.
+        """
+
         if self.src[self.loc :].startswith("//"):
             while self.loc < len(self.src) and self.src[self.loc] != "\n":
                 self.loc += 1
@@ -110,68 +115,67 @@ class Lexer:
         elif self.src[self.loc :].startswith("/*"):
             start_line = self.line
             self.loc += 2
-            while True:
+            while not self.src[self.loc :].startswith("*/"):
                 if self.loc >= len(self.src):
                     die("unterminated multi-line comment", start_line)
-                if self.src[self.loc :].startswith("*/"):
-                    self.loc += 2
-                    return True
                 elif self.src[self.loc] == "\n":
                     self.line += 1
                 self.loc += 1
+            self.loc += 2
+            return True
+        elif self.src[self.loc] in " \t\n":
+            if self.src[self.loc] == "\n":
+                self.line += 1
+            self.loc += 1
+            return True
+
         return False
 
     def peek(self) -> Token:
         """Peek at the next token without consuming it. Consumes whitespace."""
 
         # skip past whitespace
-        while self.loc < len(self.src) and (
-            self._skip_comment() or self.src[self.loc] in " \t\n"
-        ):
-            if self.src[self.loc] == "\n":
-                self.line += 1
-            self.loc += 1
+        while self.loc < len(self.src) and self._skip_comment_ws():
+            pass
 
         if self.loc >= len(self.src):
-            return Token(kind=TOK_EOF, content="", line=self.line)
+            return Token(TOK_EOF, "", self.line)
 
         # identifiers and identifier-like tokens
         # we check identifiers before literal tokens so that "return0" isn't lexed as
         # "return", "0", but this means that we need to explicitly check for
         # identifier-like tokens so "return" isn't lexed as a Name just because it's `[a-z]+`
-        m = re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*", self.src[self.loc :])
-        if m is not None:
+        if m := re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*", self.src[self.loc :]):
             tok = m.group(0)
 
             if tok in LITERAL_TOKENS:
-                return Token(kind=tok, content=tok, line=self.line)
+                # for literal tokens, the kind is their symbol / keyword
+                return Token(tok, tok, self.line)
 
-            kind = TOK_TYPE if tok in self.types else TOK_NAME  # lexer hack
-            return Token(kind=kind, content=tok, line=self.line)
+            # lexer hack
+            return Token(TOK_TYPE if tok in self.types else TOK_NAME, tok, self.line)
 
         # int constants
-        m = re.match(r"^[0-9]+", self.src[self.loc :])
-        if m is not None:
-            return Token(kind=TOK_INTCONST, content=m.group(0), line=self.line)
+        if m := re.match(r"^[0-9]+", self.src[self.loc :]):
+            return Token(TOK_INTCONST, m.group(0), self.line)
 
         escape = r"""(\\([\\abfnrtv'"?]|[0-7]{1,3}|x[A-Fa-f0-9]{1,2}))"""
         # char constants
-        m = re.match(r"^'([^'\\]|" + escape + r")'", self.src[self.loc :])
-        if m is not None:
-            return Token(kind=TOK_CHARCONST, content=m.group(0), line=self.line)
+        if m := re.match(r"^'([^'\\]|" + escape + r")'", self.src[self.loc :]):
+            return Token(TOK_CHARCONST, m.group(0), self.line)
 
         # string constants
-        m = re.match(r'^"([^"\\]|' + escape + r')*?(?<!\\)"', self.src[self.loc :])
-        if m is not None:
-            return Token(kind=TOK_STRCONST, content=m.group(0), line=self.line)
+        if m := re.match(r'^"([^"\\]|' + escape + r')*?(?<!\\)"', self.src[self.loc :]):
+            return Token(TOK_STRCONST, m.group(0), self.line)
 
         # other tokens not caught by the identifier-like-token check above
         for token_kind in LITERAL_TOKENS:
             if self.src[self.loc :].startswith(token_kind):
-                return Token(kind=token_kind, content=token_kind, line=self.line)
+                # for literal tokens, the kind is their symbol / keyword
+                return Token(token_kind, token_kind, self.line)
 
-        content = self.src[self.loc : self.loc + 10]  # arbitrary amount of context
-        return Token(kind=TOK_INVALID, content=content, line=self.line)
+        # emit a TOK_INVALID token with an arbitrary amount of context
+        return Token(TOK_INVALID, self.src[self.loc : self.loc + 10], self.line)
 
     def next(self, kind: str | None = None) -> Token:
         """Consume the next token. If `kind` is specified, die if the token doesn't match."""
@@ -187,9 +191,7 @@ class Lexer:
 
     def try_next(self, kind: str) -> Token | None:
         """If a token of the given kind is present, consume and return it. Otherwise do nothing."""
-        if self.peek().kind != kind:
-            return None
-        return self.next()
+        return self.next() if self.peek().kind == kind else None
 
 
 @dataclasses.dataclass
@@ -210,20 +212,20 @@ class CType:
     def __post_init__(self) -> None:
         if self.typename not in ("char", "int"):
             die(f"unknown type: {self.typename}", self.decl_line)
+
         self.signed = True  # TODO: support unsigned
         # wasm only supports a i32, i64, f32, and f64. narrower integers need
         # to be supported with masking.
-        # todo: if we ever support 8-byte types or floats
+        # TODO: if we ever support 8-byte types or floats
         self.wasmtype = "i32"
 
     def sizeof(self) -> int:
         """Size of this type, in bytes."""
 
-        if self.typename == "char" and not self.is_ptr() and not self.is_arr():
+        if self.typename == "char" and not self.is_ptr():
             return 1 * (self.array_size or 1)
-        elif self.wasmtype in ("i32", "f32"):
-            return 4 * (self.array_size or 1)
-        die(f"bug: unsupported type {self}")
+
+        return 4 * (self.array_size or 1)
 
     def is_ptr(self) -> bool:
         """Whether this type is a pointer or not. Returns false for arrays of non-pointers like int _[5]."""
@@ -250,23 +252,19 @@ class CType:
         assert self.is_arr(), f"bug: not an array: {self}"
         return CType(self.typename, self.pointer_level, None)
 
+    def _mem_ins_size(self) -> int:
+        """Size of this type for a load/store"""
+        return self.as_non_array().sizeof() if self.is_arr() else self.sizeof()
+
     def load_ins(self) -> str:
-        size = (self.as_non_array() if self.is_arr() else self).sizeof()
-        if size not in (1, 2, 4):
-            die(f"unsupported sizeof for load: {self}")
-        return ["", "i32.load8_s", "i32.load16_s", "", "i32.load"][size]
+        return ["", "i32.load8_s", "i32.load16_s", "", "i32.load"][self._mem_ins_size()]
 
     def store_ins(self) -> str:
-        size = (self.as_non_array() if self.is_arr() else self).sizeof()
-        if size not in (1, 2, 4):
-            die(f"unsupported sizeof for store: {self}")
-        return ["", "i32.store8", "i32.store16", "", "i32.store"][size]
+        return ["", "i32.store8", "i32.store16", "", "i32.store"][self._mem_ins_size()]
 
     def __str__(self) -> str:
-        s = self.typename + "*" * self.pointer_level
-        if self.array_size is not None:
-            s += f"[{self.array_size}]"
-        return s
+        arr = f"[{self.array_size}]" if self.array_size is not None else ""
+        return f"{self.typename}{'*' * self.pointer_level}{arr}"
 
 
 typedefs: dict[str, CType] = {}
@@ -279,10 +277,9 @@ def parse_type_and_name(lexer: Lexer, prev_t: str | None = None) -> tuple[CType,
     to support parsing a type in a comma-separated declaration like `int x, *y;`.
     """
 
-    typename = prev_t or lexer.next(TOK_TYPE).content
+    t = prev_t or lexer.next(TOK_TYPE).content
     # dataclasses.replace makes a copy so we can mutate it freely
-    type = dataclasses.replace(typedefs.get(typename) or CType(typename))
-    type.decl_line = lexer.line
+    type = dataclasses.replace(typedefs.get(t) or CType(t), decl_line=lexer.line)
 
     while lexer.try_next("*"):
         type.pointer_level += 1
@@ -316,9 +313,7 @@ class StackFrame:
         self.parent = parent
         self.variables: dict[str, FrameVar] = {}
         self.frame_size = 0
-        self.frame_offset = 0
-        if parent is not None:
-            self.frame_offset = parent.frame_offset + parent.frame_size
+        self.frame_offset = parent.frame_offset + parent.frame_size if parent else 0
 
     def add_var(self, name: str, type: CType, is_parameter: bool = False) -> None:
         self.variables[name] = FrameVar(name, type, self.frame_size, is_parameter)
@@ -335,8 +330,7 @@ class StackFrame:
 
 
 def emit_return(frame: StackFrame) -> None:
-    emit(";; return--adjust stack pointer")
-    emit("global.get $__stack_pointer")
+    emit("global.get $__stack_pointer ;; fixup stack pointer before return")
     emit(f"i32.const {frame.frame_size}")
     emit("i32.add")
     emit("global.set $__stack_pointer")
@@ -369,8 +363,9 @@ def load_result(em: ExprMeta) -> ExprMeta:
 
 def mask_to_sizeof(t: CType):
     """Mask an i32 down to the appropriate size after an operation"""
-    if not (t.is_arr() or t.is_ptr() or t.sizeof() == 4):
-        emit(f"i32.const {hex(2**(8*t.sizeof()-t.signed)-1)}")
+    if not (t.is_arr() or t.sizeof() == 4):
+        # bits = `8 * sizeof`, less one if the type is signed since that's in the high sign bit)
+        emit(f"i32.const {hex(2 ** (8 * t.sizeof() - t.signed) - 1)}")
         emit(f"i32.and")
 
 
@@ -409,8 +404,7 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
                 return ExprMeta(False, CType("int"))  # TODO return type
             else:
                 var, offset = frame.get_var_and_offset(varname)
-                emit(f";; load {varname.content}")
-                emit("global.get $__stack_pointer")
+                emit(f"global.get $__stack_pointer ;; load {varname.content}")
                 emit(f"i32.const {offset}")
                 emit("i32.add")
                 return ExprMeta(True, var.type)
@@ -476,9 +470,7 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
                 lhs_meta = load_result(lhs_meta)
                 op_token = lexer.next()
                 load_result(op())
-
                 # TODO: type checking?
-
                 emit(f"{ops[op_token.kind]}")
                 mask_to_sizeof(rtype or lhs_meta.type)
                 return ExprMeta(False, lhs_meta.type)
@@ -536,12 +528,7 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
     shlr = makeop(plusminus, {"<<": "i32.shl", ">>": "i32.shr_s"})
     cmplg = makeop(
         shlr,
-        {
-            "<": "i32.lt_s",
-            ">": "i32.gt_s",
-            "<=": "i32.le_s",
-            ">=": "i32.ge_s",
-        },
+        {"<": "i32.lt_s", ">": "i32.gt_s", "<=": "i32.le_s", ">=": "i32.ge_s"},
         CType("int"),
     )
     cmpe = makeop(cmplg, {"==": "i32.eq", "!=": "i32.ne"}, CType("int"))
@@ -579,7 +566,7 @@ def statement(lexer: Lexer, frame: StackFrame) -> None:
     def bracketed_block_or_single_statement(lexer: Lexer, frame: StackFrame) -> None:
         """Helper to parse the block of a control flow statement"""
         if lexer.try_next("{"):
-            while lexer.try_next("}") is None:
+            while not lexer.try_next("}"):
                 statement(lexer, frame)
         else:
             statement(lexer, frame)
@@ -765,7 +752,7 @@ def decl(global_frame: StackFrame, lexer: Lexer) -> None:
         global_frame.add_var(name.content, decl_type, False)
     else:
         if decl_type.is_arr():
-            die("no function array return, nice try")
+            die("function array return / global array declaration not supported")
 
         frame = StackFrame(global_frame)
         lexer.next("(")
@@ -787,27 +774,22 @@ def decl(global_frame: StackFrame, lexer: Lexer) -> None:
                 if v.is_parameter:
                     emit(f"(param ${v.name} {v.type.wasmtype})")
             emit(f"(result {decl_type.wasmtype})")
-            emit(";; fn prelude")
-            emit("global.get $__stack_pointer")
+            emit("global.get $__stack_pointer ;; prelude -- adjust stack pointer")
             emit(f"i32.const {frame.frame_offset + frame.frame_size}")
             emit("i32.sub")
             emit("global.set $__stack_pointer")
             for v in reversed(frame.variables.values()):
                 if v.is_parameter:
-                    emit("global.get $__stack_pointer")
+                    emit("global.get $__stack_pointer ;; prelude -- setup parameter")
                     emit(f"i32.const {frame.get_var_and_offset(v.name)[1]}")
                     emit("i32.add")
                     emit(f"local.get ${v.name}")
                     emit(v.type.store_ins())
 
-            while lexer.peek().kind != "}":
+            while not lexer.try_next("}"):
                 statement(lexer, frame)
-            lexer.next("}")
 
-            # wasmer seems to not understand that
-            # `(func $x (result i32) block i32.const 0 return end)` doesn't have an implicit
-            # return, so this is only there to provide a dummy stack value for the validator
-            emit("i32.const 0xdeadb33f ;; validator hack")
+            emit("unreachable")
             # TODO: for void functions we need to add an addl emit_return for implicit returns
 
 
