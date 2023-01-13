@@ -749,48 +749,51 @@ def decl(global_frame: StackFrame, lexer: Lexer) -> None:
     decl_type, name = parse_type_and_name(lexer)
 
     if lexer.try_next(";"):
+        # variable declaration
         global_frame.add_var(name.content, decl_type, False)
-    else:
-        if decl_type.is_arr():
-            die("function array return / global array declaration not supported")
 
-        frame = StackFrame(global_frame)
-        lexer.next("(")
-        if lexer.peek().kind != ")":
-            while True:
-                type, varname = parse_type_and_name(lexer)
-                frame.add_var(varname.content, type, is_parameter=True)
-                if not lexer.try_next(","):
-                    break
-        lexer.next(")")
+    # otherwise, we're declaring a function (or, there's an = sign and this is
+    # a global array initialization, which we don't support)
+    if decl_type.is_arr():
+        die("function array return / global array initializer not supported")
 
-        lexer.next("{")
-        # declarations (up top, c89 only yolo)
-        while lexer.peek().kind == TOK_TYPE:
-            variable_declaration(lexer, frame)
+    frame = StackFrame(global_frame)
+    lexer.next("(")
+    if lexer.peek().kind != ")":
+        while True:
+            type, varname = parse_type_and_name(lexer)
+            frame.add_var(varname.content, type, is_parameter=True)
+            if not lexer.try_next(","):
+                break
+    lexer.next(")")
 
-        with emit.block(f"(func ${name.content}", ")"):
-            for v in frame.variables.values():
-                if v.is_parameter:
-                    emit(f"(param ${v.name} {v.type.wasmtype})")
-            emit(f"(result {decl_type.wasmtype})")
-            emit("global.get $__stack_pointer ;; prelude -- adjust stack pointer")
-            emit(f"i32.const {frame.frame_offset + frame.frame_size}")
-            emit("i32.sub")
-            emit("global.set $__stack_pointer")
-            for v in reversed(frame.variables.values()):
-                if v.is_parameter:
-                    emit("global.get $__stack_pointer ;; prelude -- setup parameter")
-                    emit(f"i32.const {frame.get_var_and_offset(v.name)[1]}")
-                    emit("i32.add")
-                    emit(f"local.get ${v.name}")
-                    emit(v.type.store_ins())
+    lexer.next("{")
+    # declarations (up top, c89 only yolo)
+    while lexer.peek().kind == TOK_TYPE:
+        variable_declaration(lexer, frame)
 
-            while not lexer.try_next("}"):
-                statement(lexer, frame)
+    with emit.block(f"(func ${name.content}", ")"):
+        for v in frame.variables.values():
+            if v.is_parameter:
+                emit(f"(param ${v.name} {v.type.wasmtype})")
+        emit(f"(result {decl_type.wasmtype})")
+        emit("global.get $__stack_pointer ;; prelude -- adjust stack pointer")
+        emit(f"i32.const {frame.frame_offset + frame.frame_size}")
+        emit("i32.sub")
+        emit("global.set $__stack_pointer")
+        for v in reversed(frame.variables.values()):
+            if v.is_parameter:
+                emit("global.get $__stack_pointer ;; prelude -- setup parameter")
+                emit(f"i32.const {frame.get_var_and_offset(v.name)[1]}")
+                emit("i32.add")
+                emit(f"local.get ${v.name}")
+                emit(v.type.store_ins())
 
-            emit("unreachable")
-            # TODO: for void functions we need to add an addl emit_return for implicit returns
+        while not lexer.try_next("}"):
+            statement(lexer, frame)
+
+        emit("unreachable")
+        # TODO: for void functions we need to add an addl emit_return for implicit returns
 
 
 def compile(src: str) -> None:
