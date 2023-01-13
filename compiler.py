@@ -79,9 +79,12 @@ class StringPool:
 
 str_pool = StringPool()
 
-
+## Token kinds
+# Literal tokens (symbols and keywords): the `content` of these will be the same as their `kind`
 LITERAL_TOKENS = "typedef if else while do for return ++ -- << >> && || == <= >= != < > ( ) { } [ ] ; = + - * / % & | ^ , ! ~".split()
+# Meta tokens for unknown content, the end of the file, and type / name identifiers
 TOK_INVALID, TOK_EOF, TOK_TYPE, TOK_NAME = "Invalid", "Eof", "Type", "Name"
+# Constants
 TOK_INTCONST, TOK_CHARCONST, TOK_STRCONST = "IntConst", "CharConst", "StrConst"
 
 
@@ -393,16 +396,20 @@ def expression(lexer: Lexer, frame: StackFrame) -> ExprMeta:
             return meta
         else:
             varname = lexer.next(TOK_NAME)
+            # is this a function call?
             if lexer.try_next("("):
+                # yes, parse the parameters (if any) and leave them on the operand stack
                 if lexer.peek().kind != ")":
                     while True:
                         load_result(expression(lexer, frame))
                         if not lexer.try_next(","):
                             break
                 lexer.next(")")
+                # call the function
                 emit(f"call ${varname.content}")
                 return ExprMeta(False, CType("int"))  # TODO return type
             else:
+                # no, it's a variable reference, fetch it
                 var, offset = frame.get_var_and_offset(varname)
                 emit(f"global.get $__stack_pointer ;; load {varname.content}")
                 emit(f"i32.const {offset}")
@@ -733,7 +740,7 @@ def variable_declaration(lexer: Lexer, frame: StackFrame) -> None:
     lexer.next(";")
 
 
-def decl(global_frame: StackFrame, lexer: Lexer) -> None:
+def global_declaration(global_frame: StackFrame, lexer: Lexer) -> None:
     # parse a global declaration -- typedef, global variable, or function.
 
     if lexer.try_next("typedef"):
@@ -809,7 +816,7 @@ def compile(src: str) -> None:
         global_frame = StackFrame()
         lexer = Lexer(src, set(["int", "char", "short", "long", "float", "double"]))
         while lexer.peek().kind != TOK_EOF:
-            decl(global_frame, lexer)
+            global_declaration(global_frame, lexer)
 
         emit('(export "main" (func $main))')
 
